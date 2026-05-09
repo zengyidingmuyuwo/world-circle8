@@ -87,6 +87,8 @@ parser.add_argument('--buffer_size',   default=2048, type=int)
 parser.add_argument('--batch_size',    default=64,   type=int)
 parser.add_argument('--max_grad_norm', default=0.5,  type=float)
 parser.add_argument('--max_episodes',  default=2000, type=int)
+parser.add_argument('--max_train_steps', default=500000, type=int,
+                    help='Stop training after this many environment steps')
 parser.add_argument('--log_interval',  default=20,   type=int)
 parser.add_argument('--save_interval', default=200,  type=int)
 parser.add_argument('--render',        action='store_true')
@@ -284,6 +286,9 @@ def main():
     total_steps = 0
 
     for episode in range(1, args.max_episodes + 1):
+        if total_steps >= args.max_train_steps:
+            print(f'[PPO Circle8] Reached max_train_steps={args.max_train_steps}, stopping.')
+            break
         state    = env_reset(env)
         ep_reward = 0.0
 
@@ -301,7 +306,7 @@ def main():
 
             state = next_state
             total_steps += 1
-            if done:
+            if done or total_steps >= args.max_train_steps:
                 break
 
         running_reward = 0.95 * running_reward + 0.05 * ep_reward

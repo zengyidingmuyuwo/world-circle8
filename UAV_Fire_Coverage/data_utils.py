@@ -397,7 +397,8 @@ def build_dem_query_metadata(tif_filepath):
 
 def load_elevation_obstacle_map(tif_filepath, lat_center, lon_center,
                                  region_radius_m, elevation_threshold=2000.0,
-                                 target_resolution_m=50.0, return_metadata=False):
+                                 target_resolution_m=50.0, return_metadata=False,
+                                 mask_outside_circle=True):
     """Load a GeoTIFF elevation map and build a binary obstacle grid.
 
     Pixels with elevation ≥ *elevation_threshold* metres are marked as
@@ -411,6 +412,9 @@ def load_elevation_obstacle_map(tif_filepath, lat_center, lon_center,
     region_radius_m : float
     elevation_threshold : float  (default 2000 m)
     target_resolution_m : float  (default 50 m/pixel)
+    mask_outside_circle : bool (default True)
+        If True, clear obstacle pixels whose cell centres fall outside the
+        mission circle radius.
 
     Returns
     -------
@@ -473,6 +477,12 @@ def load_elevation_obstacle_map(tif_filepath, lat_center, lon_center,
         )
 
     obstacle_map = (elevation >= elevation_threshold)
+    if mask_outside_circle:
+        y = (np.arange(size_pix, dtype=np.float32) + 0.5 - size_pix / 2.0) * float(target_resolution_m)
+        x = (np.arange(size_pix, dtype=np.float32) + 0.5 - size_pix / 2.0) * float(target_resolution_m)
+        xx, yy = np.meshgrid(x, y)
+        inside_circle = (xx * xx + yy * yy) <= (float(region_radius_m) ** 2)
+        obstacle_map = np.logical_and(obstacle_map, inside_circle)
     if not return_metadata:
         return obstacle_map.astype(bool), float(target_resolution_m)
     return obstacle_map.astype(bool), float(target_resolution_m), build_dem_query_metadata(raster_path)
