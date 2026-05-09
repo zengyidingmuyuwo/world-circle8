@@ -3,6 +3,7 @@ import os
 import sys
 import numpy as np
 import matplotlib.pyplot as plt
+from matplotlib.colors import ListedColormap
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from data_utils import load_circle_data, load_elevation_obstacle_map, generate_sample_circle8_data
@@ -43,12 +44,23 @@ def main():
 
     if args.center_csv and args.points_file and os.path.exists(args.center_csv) and os.path.exists(args.points_file):
         lat_c, lon_c, radius, fire_points = load_circle_data(args.center_csv, args.points_file, circle_id=args.circle_id)
-        if args.elevation_tif and os.path.exists(args.elevation_tif):
+        resolution_m = 50.0
+        tif_path = args.elevation_tif if (args.elevation_tif and os.path.exists(args.elevation_tif)) else ''
+        if not tif_path:
+            script_dir = os.path.dirname(os.path.abspath(__file__))
+            default_elev_dir = os.path.join(os.path.dirname(script_dir), 'prepare', 'elevation')
+            if os.path.isdir(default_elev_dir):
+                tif_candidates = sorted(
+                    f for f in os.listdir(default_elev_dir) if f.lower().endswith(('.tif', '.tiff', '.zip'))
+                )
+                if tif_candidates:
+                    tif_path = os.path.join(default_elev_dir, tif_candidates[0])
+        if tif_path:
             obstacle_map, resolution_m = load_elevation_obstacle_map(
-                args.elevation_tif, lat_c, lon_c, region_radius_m=radius,
+                tif_path, lat_c, lon_c, region_radius_m=radius,
                 elevation_threshold=args.elev_threshold)
         else:
-            (_, _, radius), fire_points, obstacle_map, resolution_m = generate_sample_circle8_data()
+            obstacle_map = None
     else:
         (_, _, radius), fire_points, obstacle_map, resolution_m = generate_sample_circle8_data()
 
@@ -67,7 +79,16 @@ def main():
     if obstacle_map is not None:
         h, w = obstacle_map.shape
         ext = [-w // 2 * resolution_m, w // 2 * resolution_m, -h // 2 * resolution_m, h // 2 * resolution_m]
-        ax.imshow(obstacle_map.astype(np.float32), cmap='hot', alpha=0.35, extent=ext, origin='upper')
+        obstacle_layer = np.where(obstacle_map, 1.0, np.nan)
+        ax.imshow(
+            obstacle_layer,
+            cmap=ListedColormap(['black']),
+            alpha=1.0,
+            extent=ext,
+            origin='upper',
+            interpolation='nearest',
+            zorder=0,
+        )
     if len(planned) > 1:
         ax.plot(planned[:, 0], planned[:, 1], '--', lw=2.0, color='tab:purple', label='A* global path')
     if len(executed) > 1:
