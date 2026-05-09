@@ -298,6 +298,46 @@ def load_fire_points_shp(filepath, lat_center, lon_center):
 # GeoTIFF elevation loader (optional — requires rasterio)
 # ──────────────────────────────────────────────────────────────────────────────
 
+def find_default_elevation_source(prepare_dir):
+    """Find default DEM file under prepare dir.
+
+    Search order:
+      1) prepare/elevation.zip, prepare/elevation.tif, prepare/elevation.tiff
+      2) any tif/tiff/zip in prepare/
+      3) any tif/tiff/zip in prepare/elevation/
+    """
+    if not prepare_dir:
+        return ''
+    root = os.path.abspath(prepare_dir)
+    if not os.path.isdir(root):
+        return ''
+
+    preferred = [
+        os.path.join(root, 'elevation.zip'),
+        os.path.join(root, 'elevation.tif'),
+        os.path.join(root, 'elevation.tiff'),
+    ]
+    for path in preferred:
+        if os.path.isfile(path):
+            return path
+
+    def _pick_from_dir(path):
+        if not os.path.isdir(path):
+            return ''
+        files = sorted(
+            f for f in os.listdir(path)
+            if f.lower().endswith(('.tif', '.tiff', '.zip'))
+        )
+        if files:
+            return os.path.join(path, files[0])
+        return ''
+
+    from_root = _pick_from_dir(root)
+    if from_root:
+        return from_root
+    return _pick_from_dir(os.path.join(root, 'elevation'))
+
+
 def resolve_elevation_raster_path(path):
     """Resolve DEM source path; supports .tif/.tiff and .zip containing tif."""
     if not path:
@@ -388,6 +428,7 @@ def load_elevation_obstacle_map(tif_filepath, lat_center, lon_center,
         import rasterio
         from rasterio.windows import from_bounds
         from rasterio.enums import Resampling
+        from rasterio.warp import transform_bounds
     except ImportError:
         raise ImportError(
             "rasterio is required to read GeoTIFF files. "
@@ -406,7 +447,19 @@ def load_elevation_obstacle_map(tif_filepath, lat_center, lon_center,
         min_lat = lat_center - delta_lat
         max_lat = lat_center + delta_lat
 
-        window = from_bounds(min_lon, min_lat, max_lon, max_lat, src.transform)
+        if src.crs and str(src.crs).upper() not in ('EPSG:4326', 'OGC:CRS84'):
+            try:
+                min_x, min_y, max_x, max_y = transform_bounds(
+                    'EPSG:4326', src.crs,
+                    min_lon, min_lat, max_lon, max_lat,
+                    densify_pts=21,
+                )
+            except Exception:
+                min_x, min_y, max_x, max_y = min_lon, min_lat, max_lon, max_lat
+        else:
+            min_x, min_y, max_x, max_y = min_lon, min_lat, max_lon, max_lat
+
+        window = from_bounds(min_x, min_y, max_x, max_y, src.transform)
 
         # Compute output size at target resolution
         size_pix = int(2 * region_radius_m / target_resolution_m)

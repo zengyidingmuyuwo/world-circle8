@@ -33,7 +33,7 @@ from collections import namedtuple
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from uav_fire_obstacle_env import UAVFireObstacleEnv
 from data_utils import (load_circle_data, load_elevation_obstacle_map,
-                        generate_sample_circle8_data)
+                        generate_sample_circle8_data, find_default_elevation_source)
 from comparison_logging import EpisodeCSVLogger
 
 
@@ -96,13 +96,7 @@ parser.add_argument('--log_dir',       default=os.path.join(SCRIPT_DIR, 'logs'),
                     help='Directory for unified comparison CSV logs')
 args = parser.parse_args()
 if not args.elevation_tif:
-    elev_dir = os.path.join(PREPARE_DIR, 'elevation')
-    if os.path.isdir(elev_dir):
-        tif_candidates = sorted(
-            f for f in os.listdir(elev_dir) if f.lower().endswith(('.tif', '.tiff', '.zip'))
-        )
-        if tif_candidates:
-            args.elevation_tif = os.path.join(elev_dir, tif_candidates[0])
+    args.elevation_tif = find_default_elevation_source(PREPARE_DIR)
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 Transition = namedtuple('Transition', ['s', 'a', 'a_log_p', 'r', 's_'])

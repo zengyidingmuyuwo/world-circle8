@@ -10,7 +10,10 @@ UAV_DIR = os.path.join(ROOT, 'UAV_Fire_Coverage')
 if UAV_DIR not in sys.path:
   sys.path.insert(0, UAV_DIR)
 
-from data_utils import load_circle_data, load_elevation_obstacle_map, generate_sample_circle1_data, generate_sample_circle8_data
+from data_utils import (
+    load_circle_data, load_elevation_obstacle_map, find_default_elevation_source,
+    generate_sample_circle1_data, generate_sample_circle8_data,
+)
 from uav_fire_env import UAVFireEnv
 from uav_fire_obstacle_env import UAVFireObstacleEnv
 from comparison_logging import EpisodeCSVLogger
@@ -51,15 +54,12 @@ class UAVFire(embodied.Env):
             elevation_threshold=elev_threshold, target_resolution_m=resolution_m,
             return_metadata=True)
       elif task == 'circle8':
-        elev_dir = os.path.join(ROOT, 'prepare', 'elevation')
-        if os.path.isdir(elev_dir):
-          tif_candidates = sorted(f for f in os.listdir(elev_dir) if f.lower().endswith(('.tif', '.tiff', '.zip')))
-          if tif_candidates:
-            tif_path = os.path.join(elev_dir, tif_candidates[0])
-            obstacle_map, resolution_m, dem_query_metadata = load_elevation_obstacle_map(
-                tif_path, lat_c, lon_c, region_radius_m=radius,
-                elevation_threshold=elev_threshold, target_resolution_m=resolution_m,
-                return_metadata=True)
+        tif_path = find_default_elevation_source(os.path.join(ROOT, 'prepare'))
+        if tif_path:
+          obstacle_map, resolution_m, dem_query_metadata = load_elevation_obstacle_map(
+              tif_path, lat_c, lon_c, region_radius_m=radius,
+              elevation_threshold=elev_threshold, target_resolution_m=resolution_m,
+              return_metadata=True)
     else:
       if task == 'circle8':
         (_, _, radius), fire_points, obstacle_map, resolution_m = generate_sample_circle8_data()

@@ -333,11 +333,13 @@ class UAVFireObstacleEnv(UAVFireEnv):
 
         if self.obstacle_map is not None:
             H, W = self.obstacle_map.shape
+            half_w = 0.5 * W * self.resolution_m
+            half_h = 0.5 * H * self.resolution_m
             ext = [
-                -W // 2 * self.resolution_m,
-                W // 2 * self.resolution_m,
-                -H // 2 * self.resolution_m,
-                H // 2 * self.resolution_m,
+                -half_w,
+                half_w,
+                -half_h,
+                half_h,
             ]
             obs_float = self.obstacle_map.astype(np.float32)
             ax.contourf(
@@ -393,8 +395,9 @@ class UAVFireObstacleEnv(UAVFireEnv):
         # Obstacle map background
         if self.obstacle_map is not None:
             H, W = self.obstacle_map.shape
-            ext = [-W // 2 * self.resolution_m, W // 2 * self.resolution_m,
-                   -H // 2 * self.resolution_m, H // 2 * self.resolution_m]
+            half_w = 0.5 * W * self.resolution_m
+            half_h = 0.5 * H * self.resolution_m
+            ext = [-half_w, half_w, -half_h, half_h]
             obs_float = self.obstacle_map.astype(np.float32)
             ax.contourf(
                 obs_float, levels=[0.5, 1.5], colors=['black'], alpha=1.0,

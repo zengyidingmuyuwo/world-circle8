@@ -6,7 +6,10 @@ import matplotlib.pyplot as plt
 from matplotlib.colors import ListedColormap
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from data_utils import load_circle_data, load_elevation_obstacle_map, generate_sample_circle8_data
+from data_utils import (
+    load_circle_data, load_elevation_obstacle_map,
+    generate_sample_circle8_data, find_default_elevation_source,
+)
 from uav_fire_obstacle_env import UAVFireObstacleEnv
 
 
@@ -48,13 +51,7 @@ def main():
         tif_path = args.elevation_tif if (args.elevation_tif and os.path.exists(args.elevation_tif)) else ''
         if not tif_path:
             script_dir = os.path.dirname(os.path.abspath(__file__))
-            default_elev_dir = os.path.join(os.path.dirname(script_dir), 'prepare', 'elevation')
-            if os.path.isdir(default_elev_dir):
-                tif_candidates = sorted(
-                    f for f in os.listdir(default_elev_dir) if f.lower().endswith(('.tif', '.tiff', '.zip'))
-                )
-                if tif_candidates:
-                    tif_path = os.path.join(default_elev_dir, tif_candidates[0])
+            tif_path = find_default_elevation_source(os.path.join(os.path.dirname(script_dir), 'prepare'))
         if tif_path:
             obstacle_map, resolution_m = load_elevation_obstacle_map(
                 tif_path, lat_c, lon_c, region_radius_m=radius,
@@ -78,7 +75,9 @@ def main():
     fig, ax = plt.subplots(figsize=(8, 8))
     if obstacle_map is not None:
         h, w = obstacle_map.shape
-        ext = [-w // 2 * resolution_m, w // 2 * resolution_m, -h // 2 * resolution_m, h // 2 * resolution_m]
+        half_w = 0.5 * w * resolution_m
+        half_h = 0.5 * h * resolution_m
+        ext = [-half_w, half_w, -half_h, half_h]
         obstacle_layer = np.where(obstacle_map, 1.0, np.nan)
         ax.imshow(
             obstacle_layer,
