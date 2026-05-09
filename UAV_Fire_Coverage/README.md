@@ -224,6 +224,7 @@ The output image includes:
 3. **DreamerV3 训练**  
    - `python ../dreamerv3/main.py --configs uavfire --task uavfire_circle8`  
    - Dreamer 输入是字典观测：`{'image': ..., 'vector': [dx, dy]}`。  
+   - 若未显式传参，Dreamer 现会默认优先读取 `../prepare/circle_8_center.csv` 与 `../prepare/circle_8_points.shp`，与 SAC Circle8 环境保持一致。  
 4. **出图写论文**  
    - `python render_trajectory.py --save_path trajectory_plot.png`  
    - 直接用生成的图展示：全局虚线 vs 实际实线。  
@@ -242,3 +243,6 @@ The output image includes:
 | `--elev_threshold` | 2000.0 | Elevation obstacle threshold in metres |
 | `--render` | off | Enable live visualisation |
 | `--load` | off | Resume from saved model |
+
+> `comparison_logging.py` 只负责写标准 CSV，不会直接画三算法对比图。  
+> 训练完成后请运行：`python plot_comparison.py`（默认读取 `UAV_Fire_Coverage/logs`）。

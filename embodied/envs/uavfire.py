@@ -40,6 +40,13 @@ class UAVFire(embodied.Env):
     self._episode_reward = 0.0
     self._episode_steps = 0
     self._total_steps = 0
+    prepare_dir = os.path.join(ROOT, 'prepare')
+    default_center = os.path.join(prepare_dir, f'circle_{"8" if task == "circle8" else "1"}_center.csv')
+    default_points = os.path.join(prepare_dir, f'circle_{"8" if task == "circle8" else "1"}_points.shp')
+    if not (center_csv and points_file and os.path.exists(center_csv) and os.path.exists(points_file)):
+      if os.path.exists(default_center) and os.path.exists(default_points):
+        center_csv = default_center
+        points_file = default_points
     use_real = bool(center_csv) and bool(points_file) and os.path.exists(center_csv) and os.path.exists(points_file)
     lat_c = None
     lon_c = None
@@ -54,7 +61,7 @@ class UAVFire(embodied.Env):
             elevation_threshold=elev_threshold, target_resolution_m=resolution_m,
             return_metadata=True)
       elif task == 'circle8':
-        tif_path = find_default_elevation_source(os.path.join(ROOT, 'prepare'))
+        tif_path = find_default_elevation_source(prepare_dir)
         if tif_path:
           obstacle_map, resolution_m, dem_query_metadata = load_elevation_obstacle_map(
               tif_path, lat_c, lon_c, region_radius_m=radius,
