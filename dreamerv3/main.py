@@ -1,4 +1,5 @@
 import importlib
+import importlib.util
 import os
 import pathlib
 import sys
@@ -8,6 +9,32 @@ folder = pathlib.Path(__file__).parent
 sys.path.insert(0, str(folder.parent))
 sys.path.insert(1, str(folder.parent.parent))
 __package__ = folder.name
+
+_REQUIRED_MODULES = {
+    'elements': 'elements>=3.19.1',
+    'portal': 'portal>=3.5.0',
+    'ruamel.yaml': 'ruamel.yaml==0.19.1',
+}
+
+
+def _is_module_available(name):
+  try:
+    return importlib.util.find_spec(name) is not None
+  except ModuleNotFoundError:
+    return False
+
+
+_missing_modules = [
+    spec for spec in _REQUIRED_MODULES if not _is_module_available(spec)
+]
+if _missing_modules:
+  req_path = folder.parent / 'requirements.txt'
+  missing_specs = ', '.join(_REQUIRED_MODULES[name] for name in _missing_modules)
+  raise ModuleNotFoundError(
+      'Dreamer 运行依赖缺失: '
+      f'{missing_specs}. '
+      f'请先执行 `pip install -r {req_path}` 再运行 dreamerv3/main.py。'
+  )
 
 import elements
 import embodied
