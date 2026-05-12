@@ -335,18 +335,18 @@ class UAVFireObstacleEnv(UAVFireEnv):
             H, W = self.obstacle_map.shape
             half_w = 0.5 * W * self.resolution_m
             half_h = 0.5 * H * self.resolution_m
-            ext = [
-                -half_w,
-                half_w,
-                -half_h,
-                half_h,
-            ]
+            ext = [-half_w, half_w, -half_h, half_h]
+            # Build a float copy and mask out pixels outside the mission circle
+            # so only in-bounds terrain is visible (prevents full-raster noise fill).
+            cx_px, cy_px = W // 2, H // 2
+            ys_px, xs_px = np.ogrid[:H, :W]
+            x_m = (xs_px - cx_px) * self.resolution_m
+            y_m = (cy_px - ys_px) * self.resolution_m   # north-up
+            outside_circle = (x_m ** 2 + y_m ** 2) > self.radius ** 2
             obs_float = self.obstacle_map.astype(np.float32)
-            ax.contourf(
-                obs_float, levels=[0.5, 1.5], colors=['black'], alpha=1.0,
-                extent=ext, origin='upper', zorder=0
-            )
-            ax.imshow(obs_float, cmap='Greys', alpha=0.95, extent=ext, origin='upper', zorder=0)
+            obs_float[outside_circle] = np.nan            # transparent outside
+            ax.imshow(obs_float, cmap='Greys', vmin=0.0, vmax=1.0,
+                      alpha=0.85, extent=ext, origin='upper', zorder=1)
 
         ax.add_patch(mpatches.Circle((0, 0), self.radius, fill=False, color='steelblue', lw=2))
 
@@ -360,6 +360,11 @@ class UAVFireObstacleEnv(UAVFireEnv):
         if len(self._trajectory) > 1:
             traj = np.array(self._trajectory, dtype=np.float32)
             ax.plot(traj[:, 0], traj[:, 1], 'b-', lw=1.0, alpha=0.8, label='Trajectory')
+
+        # Bird flock positions
+        if self.num_birds > 0 and len(self._birds_pos):
+            ax.scatter(self._birds_pos[:, 0], self._birds_pos[:, 1],
+                       c='darkorange', s=80, marker='*', zorder=4, label='Birds')
 
         lim = self.radius * 1.15
         ax.set_xlim(-lim, lim)
@@ -392,19 +397,21 @@ class UAVFireObstacleEnv(UAVFireEnv):
         ax = self._ax
         ax.clear()
 
-        # Obstacle map background
+        # Obstacle map background — clipped to mission circle
         if self.obstacle_map is not None:
             H, W = self.obstacle_map.shape
             half_w = 0.5 * W * self.resolution_m
             half_h = 0.5 * H * self.resolution_m
             ext = [-half_w, half_w, -half_h, half_h]
+            cx_px, cy_px = W // 2, H // 2
+            ys_px, xs_px = np.ogrid[:H, :W]
+            x_m = (xs_px - cx_px) * self.resolution_m
+            y_m = (cy_px - ys_px) * self.resolution_m
+            outside_circle = (x_m ** 2 + y_m ** 2) > self.radius ** 2
             obs_float = self.obstacle_map.astype(np.float32)
-            ax.contourf(
-                obs_float, levels=[0.5, 1.5], colors=['black'], alpha=1.0,
-                extent=ext, origin='upper', zorder=0
-            )
-            ax.imshow(obs_float, cmap='Greys', alpha=0.95,
-                      extent=ext, origin='upper', zorder=0)
+            obs_float[outside_circle] = np.nan
+            ax.imshow(obs_float, cmap='Greys', vmin=0.0, vmax=1.0,
+                      alpha=0.85, extent=ext, origin='upper', zorder=1)
 
         # Boundary circle
         ax.add_patch(mpatches.Circle((0, 0), self.radius,
@@ -415,6 +422,11 @@ class UAVFireObstacleEnv(UAVFireEnv):
         vis = self.fire_points[self.visited]
         if len(unv): ax.scatter(unv[:, 0], unv[:, 1], c='red',      s=40, zorder=3, label='Unvisited')
         if len(vis): ax.scatter(vis[:, 0], vis[:, 1], c='limegreen', s=40, zorder=3, label='Visited')
+
+        # Bird flock
+        if self.num_birds > 0 and len(self._birds_pos):
+            ax.scatter(self._birds_pos[:, 0], self._birds_pos[:, 1],
+                       c='darkorange', s=80, marker='*', zorder=4, label='Birds')
 
         # Trajectory
         if len(self._trajectory) > 1:
