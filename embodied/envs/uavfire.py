@@ -15,6 +15,7 @@ from data_utils import (
     generate_sample_circle1_data, generate_sample_circle8_data,
 )
 from uav_fire_env import UAVFireEnv
+from uav_fire_cluster_env import UAVFireClusterEnv
 from uav_fire_obstacle_env import UAVFireObstacleEnv
 from comparison_logging import EpisodeCSVLogger
 
@@ -30,9 +31,13 @@ class UAVFire(embodied.Env):
       elev_threshold=2000.0,
       num_nearest=6,
       resolution_m=50.0,
+      num_clusters=3,
+      cluster_strategy='round_robin',
+      cluster_index=None,
+      cluster_seed=0,
       seed=None,
   ):
-    assert task in ('circle1', 'circle8'), task
+    assert task in ('circle1', 'circle8', 'circle1_cluster'), task
     self._task = task
     self._done = True
     self._info = {}
@@ -79,12 +84,18 @@ class UAVFire(embodied.Env):
           resolution_m=resolution_m, num_nearest=num_nearest, return_dict_obs=True,
           algorithm_name='DREAMER', env_name='Circle8', lat_center=lat_c, lon_center=lon_c,
           elevation_threshold=elev_threshold, dem_query_metadata=dem_query_metadata)
+    elif task == 'circle1_cluster':
+      self._env = UAVFireClusterEnv(
+          fire_points=fire_points, radius=radius, num_nearest=num_nearest, return_dict_obs=True,
+          algorithm_name='DREAMER', env_name='Circle1Cluster',
+          num_clusters=num_clusters, cluster_strategy=cluster_strategy,
+          cluster_index=cluster_index, cluster_seed=cluster_seed)
     else:
       self._env = UAVFireEnv(
           fire_points=fire_points, radius=radius, num_nearest=num_nearest, return_dict_obs=True,
           algorithm_name='DREAMER', env_name='Circle1')
     log_dir = os.path.join(UAV_DIR, 'logs')
-    scenario_name = 'Circle8' if task == 'circle8' else 'Circle1'
+    scenario_name = 'Circle8' if task == 'circle8' else ('Circle1Cluster' if task == 'circle1_cluster' else 'Circle1')
     self._episode_logger = EpisodeCSVLogger('DREAMER', scenario_name, log_dir)
     print(f'[Dreamer UAVFire] Standard CSV log: {os.path.abspath(self._episode_logger.path)}')
 

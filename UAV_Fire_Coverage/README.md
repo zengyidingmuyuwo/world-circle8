@@ -5,6 +5,7 @@ This module implements reinforcement-learning-based path planning for fixed-wing
 | Task | Circle | UAVs | Obstacles |
 |------|--------|------|-----------|
 | Fire-point coverage | Circle 1 | 3 (one per cluster) | None |
+| Fire-point coverage (clustered local obs) | Circle 1 | 1 (per episode, K=3) | None |
 | Fire-point coverage + obstacle avoidance | Circle 8 | 1 | Elevation ≥ 2000 m |
 
 Both PPO and SAC algorithms are implemented for each task.
@@ -17,6 +18,7 @@ Both PPO and SAC algorithms are implemented for each task.
 UAV_Fire_Coverage/
 ├── data_utils.py               # Data loading & coordinate conversion
 ├── uav_fire_env.py             # Gym environment — fire coverage (no obstacles)
+├── uav_fire_cluster_env.py     # Gym environment — Circle 1 clustered local observation (K=3)
 ├── uav_fire_obstacle_env.py    # Gym environment — fire coverage + obstacle avoidance
 ├── ppo_uav_circle1.py          # PPO training — Circle 1 (3 UAVs)
 ├── ppo_uav_circle8.py          # PPO training — Circle 8 (obstacles)
@@ -164,6 +166,10 @@ across all three sub-cluster environments by cycling through them one
 episode at a time.  During final evaluation the policy is applied
 independently to each cluster, simulating three simultaneous UAVs.
 
+For a **single-UAV local-observation** variant, use `UAVFireClusterEnv`
+(auto K=3 inside the environment). It selects one cluster per episode
+and exposes only that cluster to the agent.
+
 ---
 
 ## Saved models
@@ -222,7 +228,8 @@ The output image includes:
    - SAC: `python sac_uav_circle8.py`  
    现在环境会自动先做全局 A*+TSP 规划，再给 RL “指南针向量”引导。  
 3. **DreamerV3 训练**  
-   - `python ../dreamerv3/main.py --configs uavfire --task uavfire_circle8`  
+   - Circle8（障碍版）：`python ../dreamerv3/main.py --configs uavfire --task uavfire_circle8`  
+   - Circle1（K=3 聚类局部观测世界模型）：`python ../dreamerv3/main.py --configs uavfire --task uavfire_circle1_cluster`  
    - Dreamer 输入是字典观测：`{'image': ..., 'vector': [dx, dy]}`。  
    - 若未显式传参，Dreamer 现会默认优先读取 `../prepare/circle_8_center.csv` 与 `../prepare/circle_8_points.shp`，与 SAC Circle8 环境保持一致。  
 4. **出图写论文**  
