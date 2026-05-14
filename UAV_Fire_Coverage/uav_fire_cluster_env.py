@@ -1,10 +1,9 @@
 """
 Clustered UAV fire-coverage environment (Circle 1).
 
-This environment clusters all fire points into K=3 groups (K-Means) and
-lets a single UAV operate on one cluster per episode (local observation).
-It inherits the wind and bird dynamics from :class:`UAVFireEnv` while
-adding cluster selection logic in reset/step plus bird-aware rendering.
+This environment slices all fire points into K=3 angular sectors and lets
+a single UAV operate on one sector per episode (local observation). It
+inherits wind and bird dynamics from :class:`UAVFireEnv`.
 """
 
 import os
@@ -89,26 +88,28 @@ class UAVFireClusterEnv(UAVFireEnv):
 
     def _cluster_fire_points(self, fire_points):
         points = np.asarray(fire_points, dtype=np.float32)
+        k = int(max(1, self.num_clusters))
+        if k != 3:
+            raise ValueError(f'UAVFireClusterEnv currently requires num_clusters=3, got {k}.')
         if len(points) == 0:
-            return [points]
-        k = int(min(self.num_clusters, len(points)))
-        if k <= 1:
-            return [points]
-        try:
-            from sklearn.cluster import KMeans
-            km = KMeans(n_clusters=k, random_state=self.cluster_seed, n_init='auto')
-            labels = km.fit_predict(points)
-        except Exception:
-            labels = np.arange(len(points)) % k
-        clusters = [points[labels == idx] for idx in range(k)]
-        clusters = [c for c in clusters if len(c) > 0]
-        return clusters if clusters else [points]
+            return [np.zeros((0, 2), dtype=np.float32) for _ in range(3)]
+        angles = np.arctan2(points[:, 1], points[:, 0])  # [-pi, pi]
+        c0 = points[(angles >= -np.pi) & (angles <= -np.pi / 3.0)]
+        c1 = points[(angles > -np.pi / 3.0) & (angles <= np.pi / 3.0)]
+        c2 = points[(angles > np.pi / 3.0) & (angles <= np.pi)]
+        return [c0.astype(np.float32), c1.astype(np.float32), c2.astype(np.float32)]
 
     def _select_cluster_index(self, options):
         if self.cluster_index is not None:
-            return int(self.cluster_index) % len(self._clusters)
+            idx = int(self.cluster_index)
+            if idx < 0 or idx >= len(self._clusters):
+                raise ValueError(f'cluster_index must be in [0, {len(self._clusters) - 1}], got {idx}')
+            return idx
         if 'cluster_id' in options:
-            return int(options['cluster_id']) % len(self._clusters)
+            idx = int(options['cluster_id'])
+            if idx < 0 or idx >= len(self._clusters):
+                raise ValueError(f'options["cluster_id"] must be in [0, {len(self._clusters) - 1}], got {idx}')
+            return idx
         if self.cluster_strategy == 'random':
             return int(np.random.randint(len(self._clusters)))
         idx = self._cluster_cycle % len(self._clusters)
