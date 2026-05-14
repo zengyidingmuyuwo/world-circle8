@@ -22,11 +22,13 @@ if ROOT not in sys.path:
 from data_utils import load_circle_data, generate_sample_circle1_data
 from dreamerv3 import main as dreamer_main
 
+NUM_CLUSTERS = 3
+
 
 def angle_slice_clusters(points: np.ndarray) -> List[np.ndarray]:
     points = np.asarray(points, dtype=np.float32)
     if len(points) == 0:
-        return [np.zeros((0, 2), dtype=np.float32) for _ in range(3)]
+        return [np.zeros((0, 2), dtype=np.float32) for _ in range(NUM_CLUSTERS)]
     angles = np.arctan2(points[:, 1], points[:, 0])
     c0 = points[(angles >= -np.pi) & (angles <= -np.pi / 3.0)]
     c1 = points[(angles > -np.pi / 3.0) & (angles <= np.pi / 3.0)]
@@ -65,7 +67,7 @@ def rollout_one_cluster(agent, config, cluster_id: int, max_steps: int):
     env = dreamer_main.make_env(
         config,
         0,
-        num_clusters=3,
+        num_clusters=NUM_CLUSTERS,
         cluster_index=cluster_id,
         cluster_strategy='fixed',
     )
@@ -158,7 +160,7 @@ def plot_combined(results, all_fire_points, radius, save_path):
 
 def resolve_checkpoint_paths(args):
     if args.checkpoint:
-        return [args.checkpoint, args.checkpoint, args.checkpoint]
+        return [args.checkpoint for _ in range(NUM_CLUSTERS)]
     if not (args.checkpoint0 and args.checkpoint1 and args.checkpoint2):
         raise ValueError('Provide either --checkpoint or all of --checkpoint0 --checkpoint1 --checkpoint2')
     return [args.checkpoint0, args.checkpoint1, args.checkpoint2]
