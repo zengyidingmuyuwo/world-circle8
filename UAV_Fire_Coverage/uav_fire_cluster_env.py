@@ -1,9 +1,10 @@
 """
 Clustered UAV fire-coverage environment (Circle 1).
 
-This environment slices all fire points into K=3 angular sectors and lets
-a single UAV operate on one sector per episode (local observation). It
-inherits wind and bird dynamics from :class:`UAVFireEnv`.
+This environment uses the same Circle1 clustering behavior as SAC training
+and then runs a single UAV on one selected cluster per episode.
+Selected-cluster fire points are deterministically reordered by the same
+DronePlanner A*+TSP global planning result before each reset.
 """
 
 import os
@@ -62,7 +63,8 @@ class UAVFireClusterEnv(UAVFireEnv):
         options = options or {}
         self._clusters = self._cluster_fire_points(self._all_fire_points)
         self._active_cluster_idx = self._select_cluster_index(options)
-        self.fire_points = self._clusters[self._active_cluster_idx]
+        cluster_points = self._clusters[self._active_cluster_idx]
+        self.fire_points = self._order_fire_points_by_planner(cluster_points)
         self.n_fire = len(self.fire_points)
         result = super().reset(seed=seed, options=options)
         if _GYM_TUPLE_5:
@@ -88,16 +90,37 @@ class UAVFireClusterEnv(UAVFireEnv):
 
     def _cluster_fire_points(self, fire_points):
         points = np.asarray(fire_points, dtype=np.float32)
-        k = int(max(1, self.num_clusters))
-        if k != 3:
-            raise ValueError(f'UAVFireClusterEnv currently requires num_clusters=3, got {k}.')
         if len(points) == 0:
-            return [np.zeros((0, 2), dtype=np.float32) for _ in range(3)]
-        angles = np.arctan2(points[:, 1], points[:, 0])  # [-pi, pi]
-        c0 = points[(angles >= -np.pi) & (angles <= -np.pi / 3.0)]
-        c1 = points[(angles > -np.pi / 3.0) & (angles <= np.pi / 3.0)]
-        c2 = points[(angles > np.pi / 3.0) & (angles <= np.pi)]
-        return [c0.astype(np.float32), c1.astype(np.float32), c2.astype(np.float32)]
+            return [points]
+        k = int(min(max(1, self.num_clusters), len(points)))
+        if k <= 1:
+            return [points]
+        # Keep identical behavior with SAC Circle1 clustering helper.
+        try:
+            from sklearn.cluster import KMeans
+            km = KMeans(n_clusters=k, random_state=0, n_init='auto')
+            labels = km.fit_predict(points)
+        except Exception:
+            labels = np.arange(len(points)) % k
+        clusters = [points[labels == idx] for idx in range(k)]
+        clusters = [c.astype(np.float32) for c in clusters if len(c) > 0]
+        return clusters if clusters else [points]
+
+    def _order_fire_points_by_planner(self, cluster_points):
+        points = np.asarray(cluster_points, dtype=np.float32)
+        if len(points) <= 1:
+            return points.copy()
+        try:
+            start = np.zeros(2, dtype=np.float32)
+            result = self._planner.plan(start, points)
+            order = np.asarray(result.ordered_fire_indices, dtype=np.int64)
+            if len(order) != len(points):
+                return points.copy()
+            if np.unique(order).size != len(points):
+                return points.copy()
+            return points[order].astype(np.float32)
+        except Exception:
+            return points.copy()
 
     def _select_cluster_index(self, options):
         if self.cluster_index is not None:
