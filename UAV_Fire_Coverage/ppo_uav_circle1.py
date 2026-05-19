@@ -4,7 +4,7 @@ PPO training for Circle 1 — three-UAV fire-point coverage.
 Strategy
 --------
 The fire points inside Circle 1 are divided into three sub-clusters
-(K-means, k=3).  A single PPO policy is trained by cycling through all
+(angle slices).  A single PPO policy is trained by cycling through all
 three sub-cluster environments (one episode per cluster per cycle).
 After training, the same policy is evaluated on all three clusters
 simultaneously, simulating three independent UAVs.
@@ -36,7 +36,7 @@ from collections import namedtuple
 
 # ── allow importing siblings regardless of working directory ─────────────────
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from uav_fire_env import UAVFireEnv
+from uav_fire_cluster_env import UAVFireClusterEnv
 from data_utils import (load_circle_data, generate_sample_circle1_data,
                         save_sample_center_csv, save_sample_points_csv,
                         load_circle_center_csv)
@@ -220,22 +220,19 @@ class PPOAgent:
         print(f'[PPO] Model loaded ← {directory}')
 
 
-# ── helper: K-means cluster fire points ──────────────────────────────────────
+# ── helper: angle-sliced cluster fire points ─────────────────────────────────
 
-def cluster_fire_points(fire_points, n_clusters):
-    """Partition *fire_points* into *n_clusters* sub-arrays via K-means."""
-    try:
-        from sklearn.cluster import KMeans
-        km     = KMeans(n_clusters=n_clusters, random_state=0, n_init='auto')
-        labels = km.fit_predict(fire_points)
-    except ImportError:
-        # Fallback: round-robin assignment
-        labels = np.arange(len(fire_points)) % n_clusters
-
-    clusters = [fire_points[labels == k] for k in range(n_clusters)]
-    # Filter out empty clusters
-    clusters = [c for c in clusters if len(c) > 0]
-    return clusters
+def cluster_fire_points(fire_points, n_clusters=3):
+    """Partition *fire_points* into 3 angle-based sub-arrays."""
+    points = np.asarray(fire_points, dtype=np.float32)
+    if len(points) == 0:
+        empty = points.reshape(0, 2).astype(np.float32)
+        return [empty, empty.copy(), empty.copy()]
+    angles = np.arctan2(points[:, 1], points[:, 0])
+    c0 = points[(angles >= -np.pi) & (angles < -np.pi / 3.0)]
+    c1 = points[(angles >= -np.pi / 3.0) & (angles < np.pi / 3.0)]
+    c2 = points[(angles >= np.pi / 3.0) & (angles <= np.pi)]
+    return [c0.astype(np.float32), c1.astype(np.float32), c2.astype(np.float32)]
 
 
 # ── main training loop ────────────────────────────────────────────────────────
@@ -260,7 +257,19 @@ def main():
           + '  '.join(f'UAV{i+1}={len(c)}pts' for i, c in enumerate(clusters)))
 
     # ── Create environments ───────────────────────────────────────────────────
-    envs = [UAVFireEnv(fire_points=c, radius=radius, algorithm_name='PPO', env_name='Circle1') for c in clusters]
+    envs = [
+        UAVFireClusterEnv(
+            fire_points=fire_points,
+            radius=radius,
+            num_clusters=len(clusters),
+            cluster_index=idx,
+            cluster_strategy='fixed',
+            return_dict_obs=False,
+            algorithm_name='PPO',
+            env_name='Circle1',
+        )
+        for idx in range(len(clusters))
+    ]
     state_dim  = envs[0].observation_space.shape[0]
     action_dim = envs[0].action_space.shape[0]
     print(f'[PPO Circle1] state_dim={state_dim}  action_dim={action_dim}')

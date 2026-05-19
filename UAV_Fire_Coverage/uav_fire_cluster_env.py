@@ -1,8 +1,8 @@
 """
 Clustered UAV fire-coverage environment (Circle 1).
 
-This environment clusters Circle1 fire points into K groups (K-means where
-available) and then runs a single UAV on one selected cluster per episode.
+This environment clusters Circle1 fire points into 3 angle-based groups and
+then runs a single UAV on one selected cluster per episode.
 Selected-cluster fire points are deterministically reordered by the same
 DronePlanner A*+TSP global planning result before each reset.
 """
@@ -34,7 +34,7 @@ class UAVFireClusterEnv(UAVFireEnv):
         num_birds=3,
     ):
         self._all_fire_points = np.asarray(fire_points, dtype=np.float32)
-        self.num_clusters = int(max(1, num_clusters))
+        self.num_clusters = self.DEFAULT_NUM_CLUSTERS
         self.cluster_strategy = str(cluster_strategy).lower()
         self.cluster_index = None if cluster_index is None else int(cluster_index)
         self.cluster_seed = int(cluster_seed)
@@ -100,18 +100,11 @@ class UAVFireClusterEnv(UAVFireEnv):
             empty = points.reshape(0, 2).astype(np.float32)
             return [empty, empty.copy(), empty.copy()]
 
-        n_clusters = int(max(1, self.num_clusters))
-        if len(points) == 0:
-            empty = points.reshape(0, 2).astype(np.float32)
-            return [empty.copy() for _ in range(n_clusters)]
-        try:
-            from sklearn.cluster import KMeans
-            km = KMeans(n_clusters=n_clusters, random_state=self.cluster_seed, n_init='auto')
-            labels = km.fit_predict(points)
-        except Exception:
-            labels = np.arange(len(points)) % n_clusters
-        clusters = [points[labels == k] for k in range(n_clusters)]
-        return [c.astype(np.float32) for c in clusters if len(c) > 0]
+        angles = np.arctan2(points[:, 1], points[:, 0])
+        c0 = points[(angles >= -np.pi) & (angles < -np.pi / 3.0)]
+        c1 = points[(angles >= -np.pi / 3.0) & (angles < np.pi / 3.0)]
+        c2 = points[(angles >= np.pi / 3.0) & (angles <= np.pi)]
+        return [c0.astype(np.float32), c1.astype(np.float32), c2.astype(np.float32)]
 
     def _order_fire_points_by_planner(self, cluster_points):
         points = np.asarray(cluster_points, dtype=np.float32)

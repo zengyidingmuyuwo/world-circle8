@@ -6,7 +6,7 @@ Uses the dual-Q (SAC v2) formulation consistent with
 
 Strategy
 --------
-Fire points in Circle 1 are divided into 3 sub-clusters (K-means).
+Fire points in Circle 1 are divided into 3 sub-clusters (angle slices).
 A single SAC policy is trained by cycling through all three sub-cluster
 environments.  The shared replay buffer enables cross-cluster experience.
 
@@ -35,7 +35,7 @@ import torch.optim as optim
 from torch.distributions import Normal
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from uav_fire_env import UAVFireEnv
+from uav_fire_cluster_env import UAVFireClusterEnv
 from data_utils import (load_circle_data, generate_sample_circle1_data)
 from comparison_logging import EpisodeCSVLogger
 
@@ -290,17 +290,18 @@ class SACAgent:
         print(f'[SAC] Model loaded ← {directory}')
 
 
-# ── K-means cluster (same helper as PPO script) ───────────────────────────────
+# ── Angle-sliced cluster helper ───────────────────────────────────────────────
 
-def cluster_fire_points(fire_points, n_clusters):
-    try:
-        from sklearn.cluster import KMeans
-        km     = KMeans(n_clusters=n_clusters, random_state=0, n_init='auto')
-        labels = km.fit_predict(fire_points)
-    except ImportError:
-        labels = np.arange(len(fire_points)) % n_clusters
-    clusters = [fire_points[labels == k] for k in range(n_clusters)]
-    return [c for c in clusters if len(c) > 0]
+def cluster_fire_points(fire_points, n_clusters=3):
+    points = np.asarray(fire_points, dtype=np.float32)
+    if len(points) == 0:
+        empty = points.reshape(0, 2).astype(np.float32)
+        return [empty, empty.copy(), empty.copy()]
+    angles = np.arctan2(points[:, 1], points[:, 0])
+    c0 = points[(angles >= -np.pi) & (angles < -np.pi / 3.0)]
+    c1 = points[(angles >= -np.pi / 3.0) & (angles < np.pi / 3.0)]
+    c2 = points[(angles >= np.pi / 3.0) & (angles <= np.pi)]
+    return [c0.astype(np.float32), c1.astype(np.float32), c2.astype(np.float32)]
 
 
 # ── main ──────────────────────────────────────────────────────────────────────
@@ -323,7 +324,19 @@ def main():
     print(f'[SAC Circle1] {len(clusters)} clusters:  '
           + '  '.join(f'UAV{i+1}={len(c)}pts' for i, c in enumerate(clusters)))
 
-    envs = [UAVFireEnv(fire_points=c, radius=radius, algorithm_name='SAC', env_name='Circle1') for c in clusters]
+    envs = [
+        UAVFireClusterEnv(
+            fire_points=fire_points,
+            radius=radius,
+            num_clusters=len(clusters),
+            cluster_index=idx,
+            cluster_strategy='fixed',
+            return_dict_obs=False,
+            algorithm_name='SAC',
+            env_name='Circle1',
+        )
+        for idx in range(len(clusters))
+    ]
     state_dim  = envs[0].observation_space.shape[0]
     action_dim = envs[0].action_space.shape[0]
     print(f'[SAC Circle1] state_dim={state_dim}  action_dim={action_dim}')
