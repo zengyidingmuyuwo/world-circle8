@@ -349,6 +349,22 @@ class UAVFireEnv(gym.Env):
                 ax.plot(tr[:, 0], tr[:, 1], '-', lw=1.5, alpha=0.85, color=color,
                         label=f'UAV{idx + 1} Trajectory')
 
+        # Bird flock positions
+        if self.env_name.lower() != 'circle1':
+            if self.num_birds > 0 and len(self._birds_pos):
+                ax.scatter(self._birds_pos[:, 0], self._birds_pos[:, 1],
+                           c='red', s=60, marker='^', zorder=5, label='Birds')
+        else:
+            birds_labeled = False
+            ids = sorted(group.keys())
+            for env_id in ids:
+                birds = np.asarray(group[env_id].get('bird_trail_last', []), dtype=np.float32)
+                if len(birds):
+                    label = 'Birds' if not birds_labeled else None
+                    ax.scatter(birds[:, 0], birds[:, 1],
+                               c='red', s=60, marker='^', zorder=5, label=label)
+                    birds_labeled = True
+
         lim = self.radius * 1.15
         ax.set_xlim(-lim, lim)
         ax.set_ylim(-lim, lim)
@@ -642,6 +658,11 @@ class UAVFireEnv(gym.Env):
         vis = self.fire_points[self.visited]
         if len(unv): ax.scatter(unv[:, 0], unv[:, 1], c='red',   s=40, zorder=3, label='Unvisited')
         if len(vis): ax.scatter(vis[:, 0], vis[:, 1], c='limegreen', s=40, zorder=3, label='Visited')
+
+        # Bird flock
+        if self.num_birds > 0 and len(self._birds_pos):
+            ax.scatter(self._birds_pos[:, 0], self._birds_pos[:, 1],
+                       c='red', s=60, marker='^', zorder=5, label='Birds')
 
         # Trajectory
         if len(self._trajectory) > 1:

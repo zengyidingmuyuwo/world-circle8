@@ -1,7 +1,7 @@
 """
 Clustered UAV fire-coverage environment (Circle 1).
 
-This environment uses the same Circle1 clustering behavior as SAC training
+This environment slices Circle1 fire points into 3 angle-based clusters
 and then runs a single UAV on one selected cluster per episode.
 Selected-cluster fire points are deterministically reordered by the same
 DronePlanner A*+TSP global planning result before each reset.
@@ -91,20 +91,14 @@ class UAVFireClusterEnv(UAVFireEnv):
     def _cluster_fire_points(self, fire_points):
         points = np.asarray(fire_points, dtype=np.float32)
         if len(points) == 0:
-            return [points]
-        k = int(min(max(1, self.num_clusters), len(points)))
-        if k <= 1:
-            return [points]
-        # Keep identical behavior with SAC Circle1 clustering helper.
-        try:
-            from sklearn.cluster import KMeans
-            km = KMeans(n_clusters=k, random_state=0, n_init='auto')
-            labels = km.fit_predict(points)
-        except Exception:
-            labels = np.arange(len(points)) % k
-        clusters = [points[labels == idx] for idx in range(k)]
-        clusters = [c.astype(np.float32) for c in clusters if len(c) > 0]
-        return clusters if clusters else [points]
+            empty = points.reshape(0, 2).astype(np.float32)
+            return [empty, empty.copy(), empty.copy()]
+
+        angles = np.arctan2(points[:, 1], points[:, 0])
+        c0 = points[(angles >= -np.pi) & (angles < -np.pi / 3.0)]
+        c1 = points[(angles >= -np.pi / 3.0) & (angles < np.pi / 3.0)]
+        c2 = points[(angles >= np.pi / 3.0) & (angles <= np.pi)]
+        return [c0.astype(np.float32), c1.astype(np.float32), c2.astype(np.float32)]
 
     def _order_fire_points_by_planner(self, cluster_points):
         points = np.asarray(cluster_points, dtype=np.float32)
@@ -204,14 +198,17 @@ class UAVFireClusterEnv(UAVFireEnv):
         if self.env_name.lower() != 'circle1':
             if self.num_birds > 0 and len(self._birds_pos):
                 ax.scatter(self._birds_pos[:, 0], self._birds_pos[:, 1],
-                           c='darkorange', s=80, marker='*', zorder=4, label='Birds')
+                           c='red', s=60, marker='^', zorder=5, label='Birds')
         else:
+            birds_labeled = False
             ids = sorted(group.keys())
             for env_id in ids:
                 birds = np.asarray(group[env_id].get('bird_trail_last', []), dtype=np.float32)
                 if len(birds):
+                    label = 'Birds' if not birds_labeled else None
                     ax.scatter(birds[:, 0], birds[:, 1],
-                               c='darkorange', s=70, marker='*', zorder=3, label='Birds')
+                               c='red', s=60, marker='^', zorder=5, label=label)
+                    birds_labeled = True
 
         lim = self.radius * 1.15
         ax.set_xlim(-lim, lim)
@@ -259,7 +256,7 @@ class UAVFireClusterEnv(UAVFireEnv):
         # Bird flock
         if self.num_birds > 0 and len(self._birds_pos):
             ax.scatter(self._birds_pos[:, 0], self._birds_pos[:, 1],
-                       c='darkorange', s=80, marker='*', zorder=4, label='Birds')
+                       c='red', s=60, marker='^', zorder=5, label='Birds')
 
         # Trajectory
         if len(self._trajectory) > 1:

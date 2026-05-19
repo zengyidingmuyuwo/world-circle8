@@ -93,6 +93,9 @@ def main():
     if len(executed) > 1:
         ax.plot(executed[:, 0], executed[:, 1], '-', lw=2.0, color='tab:blue', label='RL trajectory')
     ax.scatter(fire_points[:, 0], fire_points[:, 1], s=50, c='red', marker='*', label='Fire points')
+    birds = getattr(env, '_birds_pos', np.zeros((0, 2), dtype=np.float32))
+    if len(birds):
+        ax.scatter(birds[:, 0], birds[:, 1], c='red', marker='^', s=60, zorder=5, label='Birds')
     ax.set_aspect('equal')
     ax.set_title('UAV Fire Navigation: Global A* Guide + RL Local Execution')
     ax.legend(loc='upper right')

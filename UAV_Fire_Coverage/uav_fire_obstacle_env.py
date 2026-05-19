@@ -364,7 +364,7 @@ class UAVFireObstacleEnv(UAVFireEnv):
         # Bird flock positions
         if self.num_birds > 0 and len(self._birds_pos):
             ax.scatter(self._birds_pos[:, 0], self._birds_pos[:, 1],
-                       c='darkorange', s=80, marker='*', zorder=4, label='Birds')
+                       c='red', s=60, marker='^', zorder=5, label='Birds')
 
         lim = self.radius * 1.15
         ax.set_xlim(-lim, lim)
@@ -426,7 +426,7 @@ class UAVFireObstacleEnv(UAVFireEnv):
         # Bird flock
         if self.num_birds > 0 and len(self._birds_pos):
             ax.scatter(self._birds_pos[:, 0], self._birds_pos[:, 1],
-                       c='darkorange', s=80, marker='*', zorder=4, label='Birds')
+                       c='red', s=60, marker='^', zorder=5, label='Birds')
 
         # Trajectory
         if len(self._trajectory) > 1:

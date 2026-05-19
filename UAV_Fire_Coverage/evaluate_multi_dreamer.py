@@ -129,9 +129,9 @@ def plot_combined(results, all_fire_points, radius, save_path):
             ax.scatter(
                 item['birds_pos'][:, 0],
                 item['birds_pos'][:, 1],
-                c='darkorange',
-                s=70,
-                marker='*',
+                c='red',
+                s=60,
+                marker='^',
                 zorder=5,
                 label='Birds',
             )
