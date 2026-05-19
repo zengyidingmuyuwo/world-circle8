@@ -30,9 +30,9 @@ def angle_slice_clusters(points: np.ndarray) -> List[np.ndarray]:
     if len(points) == 0:
         return [np.zeros((0, 2), dtype=np.float32) for _ in range(NUM_CLUSTERS)]
     angles = np.arctan2(points[:, 1], points[:, 0])
-    c0 = points[(angles >= -np.pi) & (angles <= -np.pi / 3.0)]
-    c1 = points[(angles > -np.pi / 3.0) & (angles <= np.pi / 3.0)]
-    c2 = points[(angles > np.pi / 3.0) & (angles <= np.pi)]
+    c0 = points[(angles >= -np.pi) & (angles < -np.pi / 3.0)]
+    c1 = points[(angles >= -np.pi / 3.0) & (angles < np.pi / 3.0)]
+    c2 = points[(angles >= np.pi / 3.0) & (angles <= np.pi)]
     return [c0.astype(np.float32), c1.astype(np.float32), c2.astype(np.float32)]
 
 
