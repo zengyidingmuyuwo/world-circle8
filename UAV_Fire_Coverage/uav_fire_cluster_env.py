@@ -1,8 +1,8 @@
 """
 Clustered UAV fire-coverage environment (Circle 1).
 
-This environment slices Circle1 fire points into 3 angle-based clusters
-and then runs a single UAV on one selected cluster per episode.
+This environment clusters Circle1 fire points into K groups (K-means where
+available) and then runs a single UAV on one selected cluster per episode.
 Selected-cluster fire points are deterministically reordered by the same
 DronePlanner A*+TSP global planning result before each reset.
 """
@@ -42,6 +42,7 @@ class UAVFireClusterEnv(UAVFireEnv):
         self._active_cluster_idx = 0
         self._cluster_cycle = 0
         self._cluster_plan = None
+        self._sequence_index = 0
 
         env_name = env_name or 'Circle1Cluster'
         super().__init__(
@@ -70,6 +71,7 @@ class UAVFireClusterEnv(UAVFireEnv):
         self.fire_points = ordered_points
         self._cluster_plan = plan_result
         self.n_fire = len(self.fire_points)
+        self._sequence_index = 0
         result = super().reset(seed=seed, options=options)
         if _GYM_TUPLE_5:
             obs, info = result
@@ -98,11 +100,18 @@ class UAVFireClusterEnv(UAVFireEnv):
             empty = points.reshape(0, 2).astype(np.float32)
             return [empty, empty.copy(), empty.copy()]
 
-        angles = np.arctan2(points[:, 1], points[:, 0])
-        c0 = points[(angles >= -np.pi) & (angles < -np.pi / 3.0)]
-        c1 = points[(angles >= -np.pi / 3.0) & (angles < np.pi / 3.0)]
-        c2 = points[(angles >= np.pi / 3.0) & (angles <= np.pi)]
-        return [c0.astype(np.float32), c1.astype(np.float32), c2.astype(np.float32)]
+        n_clusters = int(max(1, self.num_clusters))
+        if len(points) == 0:
+            empty = points.reshape(0, 2).astype(np.float32)
+            return [empty.copy() for _ in range(n_clusters)]
+        try:
+            from sklearn.cluster import KMeans
+            km = KMeans(n_clusters=n_clusters, random_state=self.cluster_seed, n_init='auto')
+            labels = km.fit_predict(points)
+        except Exception:
+            labels = np.arange(len(points)) % n_clusters
+        clusters = [points[labels == k] for k in range(n_clusters)]
+        return [c.astype(np.float32) for c in clusters if len(c) > 0]
 
     def _order_fire_points_by_planner(self, cluster_points):
         points = np.asarray(cluster_points, dtype=np.float32)
@@ -135,20 +144,36 @@ class UAVFireClusterEnv(UAVFireEnv):
         super()._plan_waypoints()
 
     def _waypoint_vector(self):
-        if self.n_fire == 0:
+        if self.n_fire == 0 or self._sequence_index >= self.n_fire:
             return np.zeros(4, dtype=np.float32)
-        unvisited = np.where(~self.visited)[0]
-        if len(unvisited) == 0:
-            return np.zeros(4, dtype=np.float32)
-        cur_target = self.fire_points[int(unvisited[0])]
+        cur_target = self.fire_points[int(self._sequence_index)]
         cur_rel = (cur_target - self.pos) / max(self.radius, 1.0)
-        if len(unvisited) > 1:
-            next_target = self.fire_points[int(unvisited[1])]
+        if self._sequence_index + 1 < self.n_fire:
+            next_target = self.fire_points[int(self._sequence_index + 1)]
             next_rel = (next_target - self.pos) / max(self.radius, 1.0)
         else:
             next_rel = np.zeros(2, dtype=np.float32)
         rel = np.concatenate([cur_rel, next_rel], axis=0)
         return np.clip(rel.astype(np.float32), -1.0, 1.0)
+
+    def _min_dist_to_nearest(self):
+        if self.n_fire == 0 or self._sequence_index >= self.n_fire:
+            return 0.0
+        target = self.fire_points[int(self._sequence_index)]
+        return float(np.linalg.norm(target - self.pos))
+
+    def _check_visits(self):
+        reward = 0.0
+        while self._sequence_index < self.n_fire:
+            target = self.fire_points[int(self._sequence_index)]
+            dist = float(np.linalg.norm(target - self.pos))
+            if dist > self.VISIT_RADIUS:
+                break
+            if not self.visited[self._sequence_index]:
+                self.visited[self._sequence_index] = True
+                reward += self.REWARD_VISIT
+            self._sequence_index += 1
+        return reward
 
     def _select_cluster_index(self, options):
         if self.cluster_index is not None:
