@@ -211,6 +211,19 @@ The output image includes:
 - executed local trajectory (solid),
 - fire points (star markers).
 
+### Offline planner baselines (no RL training)
+
+Use the offline evaluator to compare three planning baselines on Circle8 or
+Circle1 cluster subsets:
+
+```bash
+python UAV_Fire_Coverage/evaluate_planners.py --task circle8 --seed 0 --birds_mode frozen --save_path out_circle8.png
+python UAV_Fire_Coverage/evaluate_planners.py --task circle1 --cluster_id 1 --seed 0 --birds_mode frozen --save_path out_circle1.png
+```
+
+The plot contains all three methods, birds (red triangles), and per-method
+metrics (path length/time, planning time, collisions, minimum bird distance).
+
 ---
 
 ## 新手操作步骤（通俗版）
