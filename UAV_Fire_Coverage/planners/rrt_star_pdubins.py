@@ -1,6 +1,6 @@
 import math
 from dataclasses import dataclass
-from typing import Iterable, List, Sequence, Tuple
+from typing import Iterable, List, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -19,7 +19,47 @@ class _Node:
     cost: float
 
 
-def _segment_clear(a: np.ndarray, b: np.ndarray, birds: np.ndarray, bird_radius: float, safety_margin: float = 20.0) -> bool:
+def _world_to_grid(p: np.ndarray, obstacle_map: np.ndarray, resolution_m: float) -> Optional[Tuple[int, int]]:
+    if obstacle_map is None:
+        return None
+    h, w = obstacle_map.shape
+    cx, cy = w // 2, h // 2
+    j = int(cx + float(p[0]) / float(resolution_m))
+    i = int(cy - float(p[1]) / float(resolution_m))
+    if 0 <= i < h and 0 <= j < w:
+        return i, j
+    return None
+
+
+def _segment_hits_obstacle(a: np.ndarray, b: np.ndarray, obstacle_map: np.ndarray, resolution_m: float) -> bool:
+    if obstacle_map is None:
+        return False
+    seg = b - a
+    dist = float(np.linalg.norm(seg))
+    if dist < 1e-6:
+        cell = _world_to_grid(a, obstacle_map, resolution_m)
+        return bool(cell is not None and obstacle_map[cell])
+    step = max(1.0, float(resolution_m) * 0.5)
+    n = max(1, int(math.ceil(dist / step)))
+    for k in range(n + 1):
+        p = a + seg * (k / n)
+        cell = _world_to_grid(p, obstacle_map, resolution_m)
+        if cell is not None and obstacle_map[cell]:
+            return True
+    return False
+
+
+def _segment_clear(
+    a: np.ndarray,
+    b: np.ndarray,
+    birds: np.ndarray,
+    bird_radius: float,
+    safety_margin: float = 20.0,
+    obstacle_map: Optional[np.ndarray] = None,
+    resolution_m: float = 50.0,
+) -> bool:
+    if obstacle_map is not None and _segment_hits_obstacle(a, b, obstacle_map, resolution_m):
+        return False
     if birds is None or len(birds) == 0:
         return True
     seg = b - a
@@ -33,11 +73,26 @@ def _segment_clear(a: np.ndarray, b: np.ndarray, birds: np.ndarray, bird_radius:
     return True
 
 
-def _path_clear(path_xy: np.ndarray, birds: np.ndarray, bird_radius: float, safety_margin: float = 20.0) -> bool:
+def _path_clear(
+    path_xy: np.ndarray,
+    birds: np.ndarray,
+    bird_radius: float,
+    safety_margin: float = 20.0,
+    obstacle_map: Optional[np.ndarray] = None,
+    resolution_m: float = 50.0,
+) -> bool:
     if len(path_xy) < 2:
         return True
     for i in range(len(path_xy) - 1):
-        if not _segment_clear(path_xy[i], path_xy[i + 1], birds, bird_radius, safety_margin=safety_margin):
+        if not _segment_clear(
+            path_xy[i],
+            path_xy[i + 1],
+            birds,
+            bird_radius,
+            safety_margin=safety_margin,
+            obstacle_map=obstacle_map,
+            resolution_m=resolution_m,
+        ):
             return False
     return True
 
@@ -54,6 +109,8 @@ def pdubins_rrt_star_connect(
     speed: float,
     max_turn_rate: float,
     dt: float,
+    obstacle_map: Optional[np.ndarray] = None,
+    resolution_m: float = 50.0,
     max_iters: int = DEFAULT_MAX_ITERS,
     step_size: float = 80.0,
     connect_threshold: float = 120.0,
@@ -72,7 +129,7 @@ def pdubins_rrt_star_connect(
         dt=dt,
         turn_radius=max(speed / max(max_turn_rate, 1e-6), 1.0),
     )
-    if _path_clear(direct, birds_xy, bird_radius):
+    if _path_clear(direct, birds_xy, bird_radius, obstacle_map=obstacle_map, resolution_m=resolution_m):
         plen = float(np.linalg.norm(np.diff(direct, axis=0), axis=1).sum()) if len(direct) > 1 else 0.0
         return direct, plen
 
@@ -115,7 +172,7 @@ def pdubins_rrt_star_connect(
 
         if float(np.linalg.norm(new_xy)) > radius:
             continue
-        if not _segment_clear(n_near.pos, new_xy, birds_xy, bird_radius):
+        if not _segment_clear(n_near.pos, new_xy, birds_xy, bird_radius, obstacle_map=obstacle_map, resolution_m=resolution_m):
             continue
 
         parent = i_near
@@ -124,7 +181,7 @@ def pdubins_rrt_star_connect(
 
         for i in near_indices(new_xy):
             cand = nodes[i]
-            if not _segment_clear(cand.pos, new_xy, birds_xy, bird_radius):
+            if not _segment_clear(cand.pos, new_xy, birds_xy, bird_radius, obstacle_map=obstacle_map, resolution_m=resolution_m):
                 continue
             c = cand.cost + float(np.linalg.norm(new_xy - cand.pos))
             if c < best_cost:
@@ -140,7 +197,14 @@ def pdubins_rrt_star_connect(
                 continue
             cand = nodes[i]
             c_new = nodes[i_new].cost + float(np.linalg.norm(cand.pos - new_xy))
-            if c_new + REWIRE_EPS < cand.cost and _segment_clear(new_xy, cand.pos, birds_xy, bird_radius):
+            if c_new + REWIRE_EPS < cand.cost and _segment_clear(
+                new_xy,
+                cand.pos,
+                birds_xy,
+                bird_radius,
+                obstacle_map=obstacle_map,
+                resolution_m=resolution_m,
+            ):
                 nodes[i] = _Node(pos=cand.pos, heading=cand.heading, parent=i_new, cost=c_new)
 
         # strict connection to goal via full Dubins-like path
@@ -155,7 +219,7 @@ def pdubins_rrt_star_connect(
                 dt=dt,
                 turn_radius=max(speed / max(max_turn_rate, 1e-6), 1.0),
             )
-            if _path_clear(path_to_goal, birds_xy, bird_radius):
+            if _path_clear(path_to_goal, birds_xy, bird_radius, obstacle_map=obstacle_map, resolution_m=resolution_m):
                 c_goal = nodes[i_new].cost + float(np.linalg.norm(np.diff(path_to_goal, axis=0), axis=1).sum())
                 if c_goal < best_goal_cost:
                     best_goal_cost = c_goal
