@@ -224,6 +224,23 @@ python UAV_Fire_Coverage/evaluate_planners.py --task circle1 --cluster_id 1 --se
 The plot contains all three methods, birds (red triangles), and per-method
 metrics (path length/time, planning time, collisions, minimum bird distance).
 
+**Baseline provenance & metric notes**
+
+- Baseline2 (Dubins) and Baseline3 (P-Dubins-RRT* + 2-opt) are **in-repo simplified implementations**,
+  not direct copies of official/public code from the original papers.
+- Key differences vs. the P-Dubins-RRT* paper implementation include:
+  - relaxed Dubins-like connector (discrete step simulation) rather than exact Dubins solutions;
+  - RRT* samples XY only with fixed step size and a simple goal bias, without the full cost heuristics;
+  - rewiring and collision checks use coarse sampling against circular birds + elevation grid;
+  - 2-opt uses a Dubins-approx length heuristic instead of the paper’s exact cost model.
+- The evaluator reports **L_exec** (executed/simulated path length) and **L_plan** (waypoint/Dubins
+  heuristic length) in the terminal; plot titles use **L_exec** for consistent comparison.
+
+**Recommendation**: For small-paper comparisons, the current baselines capture the core ideas
+(turning constraints, heuristic ordering, and obstacle-aware RRT*). If you need a strict
+reproduction of the paper’s quantitative results, consider re-implementing directly from the
+official code (if available) or following the paper’s exact cost/rewire and sampling details.
+
 ---
 
 ## 新手操作步骤（通俗版）

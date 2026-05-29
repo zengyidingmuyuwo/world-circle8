@@ -242,6 +242,8 @@ def pdubins_rrt_star_connect(
         speed=speed, max_turn_rate=max_turn_rate, dt=dt,
         turn_radius=max(speed / max(max_turn_rate, 1e-6), 1.0),
     )
+    if not _path_clear(tail, birds_xy, bird_radius, obstacle_map=obstacle_map, resolution_m=resolution_m):
+        return np.zeros((0, 2), dtype=np.float32), 0.0
     if len(tail) > 1:
         chain.extend(list(tail[1:]))
 

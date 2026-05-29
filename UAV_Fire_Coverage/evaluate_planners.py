@@ -2,6 +2,7 @@ import argparse
 import math
 import os
 import time
+import zipfile
 from dataclasses import dataclass
 from typing import List, Optional, Tuple
 
@@ -16,7 +17,12 @@ from data_utils import (
 )
 from planners.dubins_utils import dubins_like_connect, path_length, simple_turning_connect, stitch_paths
 from planners.rrt_star_pdubins import pdubins_rrt_star_connect
-from planners.tsp_heuristics import nearest_neighbor_order, turning_aware_order, two_opt_improve
+from planners.tsp_heuristics import (
+    nearest_neighbor_order,
+    route_cost_dubins,
+    turning_aware_order,
+    two_opt_improve,
+)
 
 
 UAV_SPEED = 20.0
@@ -40,11 +46,24 @@ class EvalResult:
     method: str
     path: np.ndarray
     planning_time: float
-    path_length: float
+    exec_length: float
+    plan_length: float
     total_time: float
     collisions: int
     min_distance: float
     obstacle_hits: int
+    infeasible_segments: int
+    visited_count: int
+    total_points: int
+
+
+@dataclass
+class PlannerOutput:
+    path: np.ndarray
+    order: List[int]
+    plan_length: float
+    infeasible_segments: int
+    visited_count: int
 
 
 def _resolve_prepare_paths(task: str, center_csv: str = '', points_file: str = '') -> Tuple[str, str]:
@@ -77,6 +96,28 @@ def _resolve_elevation_path(task: str, elevation_tif: str = '') -> str:
         if tif_candidates:
             return os.path.join(elev_dir, tif_candidates[0])
     return ''
+
+
+def _log_elevation_source(path: str) -> None:
+    if not path or not os.path.exists(path):
+        return
+    lower = path.lower()
+    if lower.endswith('.zip'):
+        try:
+            with zipfile.ZipFile(path, 'r') as zf:
+                names = zf.namelist()
+                tif_candidates = [n for n in names if n.lower().endswith(('.tif', '.tiff'))]
+                if tif_candidates:
+                    pick = sorted(tif_candidates)[0]
+                    ext = os.path.splitext(pick)[1].lower()
+                    print(f'[Data] elevation_zip_member={pick} (format={ext})')
+                else:
+                    print('[WARNING] elevation.zip contains no tif/tiff files.')
+        except Exception as e:
+            print(f'[WARNING] Could not inspect elevation.zip: {e}')
+    else:
+        ext = os.path.splitext(path)[1].lower()
+        print(f'[Data] elevation_raster={os.path.basename(path)} (format={ext})')
 
 
 def _load_circle_dataset(
@@ -139,7 +180,40 @@ def _heading_to(a: np.ndarray, b: np.ndarray) -> float:
     return float(math.atan2(float(d[1]), float(d[0])))
 
 
-def _build_path_simple(points: np.ndarray, order: List[int]) -> np.ndarray:
+def _plan_length_euclidean(points: np.ndarray, order: List[int]) -> float:
+    if not order:
+        return 0.0
+    cur = np.asarray([0.0, 0.0], dtype=np.float32)
+    total = 0.0
+    for idx in order:
+        total += float(np.linalg.norm(points[idx] - cur))
+        cur = points[idx]
+    return float(total)
+
+
+def _segment_has_obstacle(path: np.ndarray, obstacle_map: Optional[np.ndarray], resolution_m: float) -> bool:
+    if obstacle_map is None:
+        return False
+    return _count_obstacle_hits(path, obstacle_map, resolution_m) > 0
+
+
+def _count_infeasible_segments(
+    segments: List[np.ndarray],
+    obstacle_map: Optional[np.ndarray],
+    resolution_m: float,
+) -> int:
+    if obstacle_map is None:
+        return 0
+    count = 0
+    for seg in segments:
+        if len(seg) < 2:
+            continue
+        if _segment_has_obstacle(seg, obstacle_map, resolution_m):
+            count += 1
+    return count
+
+
+def _build_path_simple(points: np.ndarray, order: List[int]) -> Tuple[np.ndarray, List[np.ndarray]]:
     pos = np.asarray([0.0, 0.0], dtype=np.float32)
     heading = 0.0
     segments = [np.asarray([pos], dtype=np.float32)]
@@ -147,10 +221,10 @@ def _build_path_simple(points: np.ndarray, order: List[int]) -> np.ndarray:
         seg, heading = simple_turning_connect(pos, heading, points[idx], UAV_SPEED, MAX_TURN_RATE, DT)
         segments.append(seg)
         pos = points[idx]
-    return stitch_paths(segments)
+    return stitch_paths(segments), segments
 
 
-def _build_path_dubins(points: np.ndarray, order: List[int]) -> np.ndarray:
+def _build_path_dubins(points: np.ndarray, order: List[int]) -> Tuple[np.ndarray, List[np.ndarray]]:
     pos = np.asarray([0.0, 0.0], dtype=np.float32)
     heading = 0.0
     segments = [np.asarray([pos], dtype=np.float32)]
@@ -171,7 +245,7 @@ def _build_path_dubins(points: np.ndarray, order: List[int]) -> np.ndarray:
         )
         segments.append(seg)
         pos = goal
-    return stitch_paths(segments)
+    return stitch_paths(segments), segments
 
 
 def _make_birds(rng: np.random.Generator, radius: float, n_birds: int = 6) -> Tuple[np.ndarray, np.ndarray]:
@@ -182,6 +256,19 @@ def _make_birds(rng: np.random.Generator, radius: float, n_birds: int = 6) -> Tu
     speed = rng.uniform(BIRD_MIN_SPEED, BIRD_MAX_SPEED, size=n_birds)
     vels = np.column_stack([speed * np.cos(vel_ang), speed * np.sin(vel_ang)]).astype(np.float32)
     return birds, vels
+
+
+def _force_bird_on_path(birds: np.ndarray, points: np.ndarray, order: List[int], radius: float) -> None:
+    if len(birds) == 0 or not order:
+        return
+    start = np.asarray([0.0, 0.0], dtype=np.float32)
+    first = points[order[0]]
+    mid = (start + first) * 0.5
+    r = float(np.linalg.norm(mid))
+    max_r = max(radius - BIRD_RADIUS, 1.0)
+    if r > max_r:
+        mid = mid / (r + EPS) * max_r
+    birds[0] = mid
 
 
 def _update_birds(birds: np.ndarray, vels: np.ndarray, radius: float, dt: float) -> None:
@@ -253,16 +340,20 @@ def _evaluate_bird_metrics(path: np.ndarray, birds_init: np.ndarray, birds_vel_i
     return collisions, min_d
 
 
-def _baseline1(points: np.ndarray) -> Tuple[np.ndarray, List[int]]:
+def _baseline1(points: np.ndarray, obstacle_map: Optional[np.ndarray], resolution_m: float) -> PlannerOutput:
     order = nearest_neighbor_order(points)
-    path = _build_path_simple(points, order)
-    return path, order
+    path, segments = _build_path_simple(points, order)
+    infeasible = _count_infeasible_segments(segments, obstacle_map, resolution_m)
+    plan_len = _plan_length_euclidean(points, order)
+    return PlannerOutput(path=path, order=order, plan_length=plan_len, infeasible_segments=infeasible, visited_count=len(order))
 
 
-def _baseline2(points: np.ndarray) -> Tuple[np.ndarray, List[int]]:
+def _baseline2(points: np.ndarray, obstacle_map: Optional[np.ndarray], resolution_m: float) -> PlannerOutput:
     order = nearest_neighbor_order(points)
-    path = _build_path_dubins(points, order)
-    return path, order
+    path, segments = _build_path_dubins(points, order)
+    infeasible = _count_infeasible_segments(segments, obstacle_map, resolution_m)
+    plan_len = route_cost_dubins(points, order, np.asarray([0.0, 0.0], dtype=np.float32), 0.0, TURN_RADIUS)
+    return PlannerOutput(path=path, order=order, plan_length=plan_len, infeasible_segments=infeasible, visited_count=len(order))
 
 
 def _baseline3(
@@ -272,13 +363,16 @@ def _baseline3(
     radius: float,
     obstacle_map: Optional[np.ndarray] = None,
     resolution_m: float = 50.0,
-) -> Tuple[np.ndarray, List[int]]:
+) -> PlannerOutput:
     order = turning_aware_order(points, np.asarray([0.0, 0.0], dtype=np.float32), 0.0, TURN_RADIUS)
     order = two_opt_improve(order, points, np.asarray([0.0, 0.0], dtype=np.float32), 0.0, TURN_RADIUS)
+    plan_len = route_cost_dubins(points, order, np.asarray([0.0, 0.0], dtype=np.float32), 0.0, TURN_RADIUS)
 
     pos = np.asarray([0.0, 0.0], dtype=np.float32)
     heading = 0.0
     segments = [np.asarray([pos], dtype=np.float32)]
+    infeasible = 0
+    visited = 0
     for k, idx in enumerate(order):
         goal = points[idx]
         goal_h = heading
@@ -301,11 +395,18 @@ def _baseline3(
         )
         if len(seg) == 0:
             seg, heading = dubins_like_connect(pos, heading, goal, goal_h, UAV_SPEED, MAX_TURN_RATE, DT, TURN_RADIUS)
-        else:
-            heading = _heading_to(seg[-2], seg[-1]) if len(seg) >= 2 else heading
+            if _segment_has_obstacle(seg, obstacle_map, resolution_m):
+                seg = np.zeros((0, 2), dtype=np.float32)
+        if len(seg) == 0:
+            infeasible += 1
+            continue
+        heading = _heading_to(seg[-2], seg[-1]) if len(seg) >= 2 else heading
         segments.append(seg)
         pos = goal
-    return stitch_paths(segments), order
+        visited += 1
+    path = stitch_paths(segments)
+    infeasible += _count_infeasible_segments(segments, obstacle_map, resolution_m)
+    return PlannerOutput(path=path, order=order, plan_length=plan_len, infeasible_segments=infeasible, visited_count=visited)
 
 
 def _run_method(
@@ -320,13 +421,27 @@ def _run_method(
     resolution_m: float,
 ) -> EvalResult:
     t0 = time.perf_counter()
-    path, _ = planner_fn(points)
+    plan = planner_fn(points)
     planning_time = time.perf_counter() - t0
-    plen = path_length(path)
-    total_t = plen / UAV_SPEED if UAV_SPEED > 1e-6 else float('nan')
+    path = plan.path
+    exec_len = path_length(path)
+    total_t = exec_len / UAV_SPEED if UAV_SPEED > 1e-6 else float('nan')
     collisions, min_d = _evaluate_bird_metrics(path, birds, birds_vel, birds_mode, radius)
     obstacle_hits = _count_obstacle_hits(path, obstacle_map, resolution_m)
-    return EvalResult(name, path, planning_time, plen, total_t, collisions, min_d, obstacle_hits)
+    return EvalResult(
+        name,
+        path,
+        planning_time,
+        exec_len,
+        plan.plan_length,
+        total_t,
+        collisions,
+        min_d,
+        obstacle_hits,
+        plan.infeasible_segments,
+        plan.visited_count,
+        len(points),
+    )
 
 
 def _plot_results(
@@ -352,8 +467,9 @@ def _plot_results(
         ax.set_aspect('equal')
         ax.set_title(
             f"{res.method}\n"
-            f"L={res.path_length:.1f}m  T={res.total_time:.1f}s  Plan={res.planning_time:.3f}s\n"
-            f"Coll={res.collisions}  MinD={res.min_distance:.1f}m  ObsHits={res.obstacle_hits}"
+            f"L_exec={res.exec_length:.1f}m  T={res.total_time:.1f}s  Plan={res.planning_time:.3f}s\n"
+            f"Coll={res.collisions}  Infeas={res.infeasible_segments}  MinD={res.min_distance:.1f}m\n"
+            f"Visited={res.visited_count}/{res.total_points}  ObsHits={res.obstacle_hits}"
         )
         ax.grid(True, alpha=0.25)
     axes[0].legend(loc='upper right', fontsize=8)
@@ -395,7 +511,7 @@ def main() -> None:
     parser.add_argument('--task', type=str, default='circle8', choices=['circle1', 'circle8'])
     parser.add_argument('--cluster_id', type=int, default=0, help='Circle1 cluster id (0-based). Ignored for circle8.')
     parser.add_argument('--seed', type=int, default=0)
-    parser.add_argument('--birds_mode', type=str, default='frozen', choices=['frozen', 'moving'])
+    parser.add_argument('--birds_mode', type=str, default='frozen', choices=['frozen', 'moving', 'force_on_path'])
     parser.add_argument('--save_path', type=str, default='offline_planner_eval.png')
     parser.add_argument('--context_path', type=str, default='')
     parser.add_argument('--center_csv', type=str, default='')
@@ -441,6 +557,7 @@ def main() -> None:
     if args.task == 'circle8':
         if elevation_tif and os.path.exists(elevation_tif):
             print(f'[Data] elevation_tif={os.path.abspath(elevation_tif)}')
+            _log_elevation_source(elevation_tif)
             try:
                 obstacle_map, resolution_m = load_elevation_obstacle_map(
                     elevation_tif,
@@ -470,10 +587,20 @@ def main() -> None:
         fire_points = clusters[args.cluster_id]
 
     birds, bird_vels = _make_birds(rng, radius)
+    if args.birds_mode == 'force_on_path':
+        force_order = nearest_neighbor_order(fire_points)
+        _force_bird_on_path(birds, fire_points, force_order, radius)
+        print('[Birds] force_on_path enabled: placing one bird on baseline2 first leg.')
 
     methods = [
-        ('Baseline1: Euclidean-order + simple turning', lambda pts: _baseline1(pts)),
-        ('Baseline2: Euclidean-order + Dubins', lambda pts: _baseline2(pts)),
+        (
+            'Baseline1: Euclidean-order + simple turning',
+            lambda pts: _baseline1(pts, obstacle_map=obstacle_map, resolution_m=resolution_m),
+        ),
+        (
+            'Baseline2: Euclidean-order + Dubins',
+            lambda pts: _baseline2(pts, obstacle_map=obstacle_map, resolution_m=resolution_m),
+        ),
         (
             'Baseline3: 2-opt turn-cost + P-Dubins-RRT*',
             lambda pts: _baseline3(
@@ -502,9 +629,11 @@ def main() -> None:
         )
         results.append(res)
         print(
-            f'[{name}] length={res.path_length:.2f}m time={res.total_time:.2f}s '
-            f'planning={res.planning_time:.3f}s collisions={res.collisions} '
-            f'min_distance={res.min_distance:.2f}m obstacle_hits={res.obstacle_hits}'
+            f'[{name}] L_exec={res.exec_length:.2f}m L_plan={res.plan_length:.2f}m '
+            f'time={res.total_time:.2f}s planning={res.planning_time:.3f}s '
+            f'collisions={res.collisions} infeasible={res.infeasible_segments} '
+            f'min_distance={res.min_distance:.2f}m obstacle_hits={res.obstacle_hits} '
+            f'visited={res.visited_count}/{res.total_points}'
         )
 
     context_path = args.context_path
