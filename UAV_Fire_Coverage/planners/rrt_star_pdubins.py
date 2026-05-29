@@ -83,24 +83,6 @@ def _path_clear(
 ) -> bool:
     if len(path_xy) < 2:
         return True
-
-
-def path_clear(
-        path_xy: np.ndarray,
-        birds: np.ndarray,
-        bird_radius: float,
-        safety_margin: float = 20.0,
-        obstacle_map: Optional[np.ndarray] = None,
-        resolution_m: float = 50.0,
-) -> bool:
-        return _path_clear(
-            path_xy,
-            birds,
-            bird_radius,
-            safety_margin=safety_margin,
-            obstacle_map=obstacle_map,
-            resolution_m=resolution_m,
-        )
     for i in range(len(path_xy) - 1):
         if not _segment_clear(
             path_xy[i],
@@ -113,6 +95,24 @@ def path_clear(
         ):
             return False
     return True
+
+
+def path_clear(
+    path_xy: np.ndarray,
+    birds: np.ndarray,
+    bird_radius: float,
+    safety_margin: float = 20.0,
+    obstacle_map: Optional[np.ndarray] = None,
+    resolution_m: float = 50.0,
+) -> bool:
+    return _path_clear(
+        path_xy,
+        birds,
+        bird_radius,
+        safety_margin=safety_margin,
+        obstacle_map=obstacle_map,
+        resolution_m=resolution_m,
+    )
 
 
 def pdubins_rrt_star_connect(
