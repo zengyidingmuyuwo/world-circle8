@@ -34,6 +34,8 @@ def simple_turning_connect(
     dt: float,
     goal_tolerance: float = 20.0,
     max_steps: int = 2000,
+    visit_radius: float = 0.0,
+    terminate_on_visit: bool = False,
 ) -> Tuple[np.ndarray, float]:
     """Simple kinematic connector: steer toward goal with bounded turn rate."""
     pos = np.asarray(start_xy, dtype=np.float32).copy()
@@ -41,6 +43,8 @@ def simple_turning_connect(
     heading = float(start_heading)
     turn_step = float(max_turn_rate * dt)
     pts = [pos.copy()]
+    reached_goal = False
+    reached_visit = False
 
     init_dist = float(np.linalg.norm(goal - pos))
     dyn_limit = max(80, int(init_dist / max(speed * dt, 1e-6) * 4.0) + 120)
@@ -49,6 +53,10 @@ def simple_turning_connect(
         d = goal - pos
         dist = float(np.linalg.norm(d))
         if dist <= goal_tolerance:
+            reached_goal = True
+            break
+        if terminate_on_visit and visit_radius > 0.0 and dist <= visit_radius:
+            reached_visit = True
             break
         desired = math.atan2(float(d[1]), float(d[0]))
         delta = angle_diff(desired, heading)
@@ -56,7 +64,7 @@ def simple_turning_connect(
         pos = _step_forward(pos, heading, speed, dt)
         pts.append(pos.copy())
 
-    if np.linalg.norm(goal - pos) > 1e-3:
+    if not reached_goal and not reached_visit and np.linalg.norm(goal - pos) > 1e-3:
         pts.append(goal.copy())
     return np.asarray(pts, dtype=np.float32), heading
 
@@ -89,6 +97,9 @@ def dubins_like_connect(
     turn_radius: float,
     goal_tolerance: float = 20.0,
     max_steps: int = 2500,
+    visit_radius: float = 0.0,
+    terminate_on_visit: bool = False,
+    turn_then_straight: bool = False,
 ) -> Tuple[np.ndarray, float]:
     """Relaxed Dubins-style connector using heading blending near the goal."""
     pos = np.asarray(start_xy, dtype=np.float32).copy()
@@ -96,6 +107,9 @@ def dubins_like_connect(
     heading = float(start_heading)
     turn_step = float(max_turn_rate * dt)
     pts = [pos.copy()]
+    reached_goal = False
+    reached_visit = False
+    straight_phase = False
 
     init_dist = float(np.linalg.norm(goal - pos))
     dyn_limit = max(100, int(init_dist / max(speed * dt, 1e-6) * 5.0) + 150)
@@ -104,30 +118,43 @@ def dubins_like_connect(
         vec = goal - pos
         dist = float(np.linalg.norm(vec))
         if dist <= goal_tolerance:
+            reached_goal = True
+            break
+        if terminate_on_visit and visit_radius > 0.0 and dist <= visit_radius:
+            reached_visit = True
             break
 
         line_h = math.atan2(float(vec[1]), float(vec[0]))
-        if dist > HEADING_BLEND_FACTOR * turn_radius:
-            desired = line_h
+        if turn_then_straight:
+            if not straight_phase:
+                delta = angle_diff(line_h, heading)
+                if abs(delta) <= turn_step:
+                    heading = wrap_angle(line_h)
+                    straight_phase = True
+                else:
+                    heading = wrap_angle(heading + float(np.clip(delta, -turn_step, turn_step)))
         else:
-            alpha = float(
-                np.clip(
-                    (HEADING_BLEND_FACTOR * turn_radius - dist) / (HEADING_BLEND_FACTOR * turn_radius),
-                    0.0,
-                    1.0,
+            if dist > HEADING_BLEND_FACTOR * turn_radius:
+                desired = line_h
+            else:
+                alpha = float(
+                    np.clip(
+                        (HEADING_BLEND_FACTOR * turn_radius - dist) / (HEADING_BLEND_FACTOR * turn_radius),
+                        0.0,
+                        1.0,
+                    )
                 )
-            )
-            sx, sy = math.cos(line_h), math.sin(line_h)
-            gx, gy = math.cos(goal_heading), math.sin(goal_heading)
-            mix = np.array([(1 - alpha) * sx + alpha * gx, (1 - alpha) * sy + alpha * gy], dtype=np.float32)
-            desired = math.atan2(float(mix[1]), float(mix[0]))
+                sx, sy = math.cos(line_h), math.sin(line_h)
+                gx, gy = math.cos(goal_heading), math.sin(goal_heading)
+                mix = np.array([(1 - alpha) * sx + alpha * gx, (1 - alpha) * sy + alpha * gy], dtype=np.float32)
+                desired = math.atan2(float(mix[1]), float(mix[0]))
 
-        delta = angle_diff(desired, heading)
-        heading = wrap_angle(heading + float(np.clip(delta, -turn_step, turn_step)))
+            delta = angle_diff(desired, heading)
+            heading = wrap_angle(heading + float(np.clip(delta, -turn_step, turn_step)))
         pos = _step_forward(pos, heading, speed, dt)
         pts.append(pos.copy())
 
-    if np.linalg.norm(goal - pos) > 1e-3:
+    if not reached_goal and not reached_visit and np.linalg.norm(goal - pos) > 1e-3:
         pts.append(goal.copy())
     return np.asarray(pts, dtype=np.float32), heading
 

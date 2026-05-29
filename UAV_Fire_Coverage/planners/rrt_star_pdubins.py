@@ -83,6 +83,24 @@ def _path_clear(
 ) -> bool:
     if len(path_xy) < 2:
         return True
+
+
+def path_clear(
+        path_xy: np.ndarray,
+        birds: np.ndarray,
+        bird_radius: float,
+        safety_margin: float = 20.0,
+        obstacle_map: Optional[np.ndarray] = None,
+        resolution_m: float = 50.0,
+) -> bool:
+        return _path_clear(
+            path_xy,
+            birds,
+            bird_radius,
+            safety_margin=safety_margin,
+            obstacle_map=obstacle_map,
+            resolution_m=resolution_m,
+        )
     for i in range(len(path_xy) - 1):
         if not _segment_clear(
             path_xy[i],
@@ -115,10 +133,16 @@ def pdubins_rrt_star_connect(
     step_size: float = 80.0,
     connect_threshold: float = 120.0,
     neighbor_radius: float = 180.0,
+    visit_radius: float = 0.0,
+    terminate_on_visit: bool = False,
+    turn_then_straight: bool = False,
 ) -> Tuple[np.ndarray, float]:
     """P-Dubins-RRT*: XY sampling, strict collision-free connect/rewire."""
     start = np.asarray(start_xy, dtype=np.float32)
     goal = np.asarray(goal_xy, dtype=np.float32)
+    turn_radius = max(speed / max(max_turn_rate, 1e-6), 1.0)
+    if terminate_on_visit and visit_radius > 0.0:
+        connect_threshold = max(connect_threshold, float(visit_radius))
     direct, _ = dubins_like_connect(
         start,
         start_heading,
@@ -127,7 +151,10 @@ def pdubins_rrt_star_connect(
         speed=speed,
         max_turn_rate=max_turn_rate,
         dt=dt,
-        turn_radius=max(speed / max(max_turn_rate, 1e-6), 1.0),
+        turn_radius=turn_radius,
+        visit_radius=visit_radius,
+        terminate_on_visit=terminate_on_visit,
+        turn_then_straight=turn_then_straight,
     )
     if _path_clear(direct, birds_xy, bird_radius, obstacle_map=obstacle_map, resolution_m=resolution_m):
         plen = float(np.linalg.norm(np.diff(direct, axis=0), axis=1).sum()) if len(direct) > 1 else 0.0
@@ -207,8 +234,14 @@ def pdubins_rrt_star_connect(
             ):
                 nodes[i] = _Node(pos=cand.pos, heading=cand.heading, parent=i_new, cost=c_new)
 
+        dist_goal = float(np.linalg.norm(new_xy - goal))
+        if terminate_on_visit and visit_radius > 0.0 and dist_goal <= visit_radius:
+            if nodes[i_new].cost < best_goal_cost:
+                best_goal_cost = nodes[i_new].cost
+                best_goal_idx = i_new
+            continue
         # strict connection to goal via full Dubins-like path
-        if float(np.linalg.norm(new_xy - goal)) <= connect_threshold:
+        if dist_goal <= connect_threshold:
             path_to_goal, _ = dubins_like_connect(
                 new_xy,
                 nodes[i_new].heading,
@@ -217,7 +250,10 @@ def pdubins_rrt_star_connect(
                 speed=speed,
                 max_turn_rate=max_turn_rate,
                 dt=dt,
-                turn_radius=max(speed / max(max_turn_rate, 1e-6), 1.0),
+                turn_radius=turn_radius,
+                visit_radius=visit_radius,
+                terminate_on_visit=terminate_on_visit,
+                turn_then_straight=turn_then_straight,
             )
             if _path_clear(path_to_goal, birds_xy, bird_radius, obstacle_map=obstacle_map, resolution_m=resolution_m):
                 c_goal = nodes[i_new].cost + float(np.linalg.norm(np.diff(path_to_goal, axis=0), axis=1).sum())
@@ -237,15 +273,19 @@ def pdubins_rrt_star_connect(
         cur = nodes[cur].parent
     chain.reverse()
 
-    tail, _ = dubins_like_connect(
-        chain[-1], nodes[best_goal_idx].heading, goal, goal_heading,
-        speed=speed, max_turn_rate=max_turn_rate, dt=dt,
-        turn_radius=max(speed / max(max_turn_rate, 1e-6), 1.0),
-    )
-    if not _path_clear(tail, birds_xy, bird_radius, obstacle_map=obstacle_map, resolution_m=resolution_m):
-        return np.zeros((0, 2), dtype=np.float32), 0.0
-    if len(tail) > 1:
-        chain.extend(list(tail[1:]))
+    if not (terminate_on_visit and visit_radius > 0.0 and float(np.linalg.norm(chain[-1] - goal)) <= visit_radius):
+        tail, _ = dubins_like_connect(
+            chain[-1], nodes[best_goal_idx].heading, goal, goal_heading,
+            speed=speed, max_turn_rate=max_turn_rate, dt=dt,
+            turn_radius=turn_radius,
+            visit_radius=visit_radius,
+            terminate_on_visit=terminate_on_visit,
+            turn_then_straight=turn_then_straight,
+        )
+        if not _path_clear(tail, birds_xy, bird_radius, obstacle_map=obstacle_map, resolution_m=resolution_m):
+            return np.zeros((0, 2), dtype=np.float32), 0.0
+        if len(tail) > 1:
+            chain.extend(list(tail[1:]))
 
     path = np.asarray(chain, dtype=np.float32)
     plen = float(np.linalg.norm(np.diff(path, axis=0), axis=1).sum()) if len(path) > 1 else 0.0

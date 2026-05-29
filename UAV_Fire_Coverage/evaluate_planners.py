@@ -16,12 +16,14 @@ from data_utils import (
     generate_sample_circle8_data,
 )
 from planners.dubins_utils import dubins_like_connect, path_length, simple_turning_connect, stitch_paths
-from planners.rrt_star_pdubins import pdubins_rrt_star_connect
+from planners.rrt_star_pdubins import path_clear, pdubins_rrt_star_connect
 from planners.tsp_heuristics import (
+    exec_rollout_length,
     nearest_neighbor_order,
     route_cost_dubins,
     turning_aware_order,
     two_opt_improve,
+    two_opt_improve_exec,
 )
 
 
@@ -30,6 +32,7 @@ MAX_TURN_RATE = 0.25
 DT = 1.0
 TURN_RADIUS = UAV_SPEED / MAX_TURN_RATE
 BIRD_RADIUS = 85.0
+VISIT_RADIUS = 120.0
 N_CIRCLE1_CLUSTERS = 3
 BASELINE3_SEED_OFFSET = 123
 BIRD_MIN_RADIUS_FACTOR = 0.15
@@ -55,6 +58,7 @@ class EvalResult:
     infeasible_segments: int
     visited_count: int
     total_points: int
+    coverage_rate: float
 
 
 @dataclass
@@ -180,15 +184,39 @@ def _heading_to(a: np.ndarray, b: np.ndarray) -> float:
     return float(math.atan2(float(d[1]), float(d[0])))
 
 
-def _plan_length_euclidean(points: np.ndarray, order: List[int]) -> float:
+def _plan_length_euclidean(points: np.ndarray, order: List[int], visit_radius: float = 0.0) -> float:
     if not order:
         return 0.0
     cur = np.asarray([0.0, 0.0], dtype=np.float32)
+    cur_radius = 0.0
     total = 0.0
     for idx in order:
-        total += float(np.linalg.norm(points[idx] - cur))
+        d = float(np.linalg.norm(points[idx] - cur))
+        if visit_radius > 0.0:
+            d = max(0.0, d - (cur_radius + visit_radius))
+        total += d
         cur = points[idx]
+        cur_radius = visit_radius
     return float(total)
+
+
+def _trim_path_on_visit(path: np.ndarray, goal: np.ndarray, visit_radius: float) -> Tuple[np.ndarray, bool]:
+    if visit_radius <= 0.0 or len(path) == 0:
+        return path, False
+    d = np.linalg.norm(path - goal[None, :], axis=1)
+    hit = np.where(d <= visit_radius)[0]
+    if len(hit) == 0:
+        return path, False
+    cut = int(hit[0])
+    return np.asarray(path[:cut + 1], dtype=np.float32), True
+
+
+def _segment_reaches(path: np.ndarray, goal: np.ndarray, visit_radius: float, goal_tolerance: float = 20.0) -> bool:
+    if len(path) == 0:
+        return False
+    if visit_radius > 0.0:
+        return bool(np.any(np.linalg.norm(path - goal[None, :], axis=1) <= visit_radius))
+    return bool(np.linalg.norm(path[-1] - goal) <= goal_tolerance)
 
 
 def _segment_has_obstacle(path: np.ndarray, obstacle_map: Optional[np.ndarray], resolution_m: float) -> bool:
@@ -213,21 +241,50 @@ def _count_infeasible_segments(
     return count
 
 
-def _build_path_simple(points: np.ndarray, order: List[int]) -> Tuple[np.ndarray, List[np.ndarray]]:
+def _build_path_simple(
+    points: np.ndarray,
+    order: List[int],
+    visit_radius: float = 0.0,
+    early_terminate_on_visit: bool = False,
+) -> Tuple[np.ndarray, List[np.ndarray], int]:
     pos = np.asarray([0.0, 0.0], dtype=np.float32)
     heading = 0.0
     segments = [np.asarray([pos], dtype=np.float32)]
+    visited = 0
     for idx in order:
-        seg, heading = simple_turning_connect(pos, heading, points[idx], UAV_SPEED, MAX_TURN_RATE, DT)
+        seg, heading = simple_turning_connect(
+            pos,
+            heading,
+            points[idx],
+            UAV_SPEED,
+            MAX_TURN_RATE,
+            DT,
+            visit_radius=visit_radius,
+            terminate_on_visit=early_terminate_on_visit,
+        )
+        if visit_radius > 0.0:
+            seg, _ = _trim_path_on_visit(seg, points[idx], visit_radius)
+        if _segment_reaches(seg, points[idx], visit_radius):
+            visited += 1
+        if len(seg) >= 2:
+            heading = _heading_to(seg[-2], seg[-1])
+        if len(seg) > 0:
+            pos = seg[-1]
         segments.append(seg)
-        pos = points[idx]
-    return stitch_paths(segments), segments
+    return stitch_paths(segments), segments, visited
 
 
-def _build_path_dubins(points: np.ndarray, order: List[int]) -> Tuple[np.ndarray, List[np.ndarray]]:
+def _build_path_dubins(
+    points: np.ndarray,
+    order: List[int],
+    visit_radius: float = 0.0,
+    early_terminate_on_visit: bool = False,
+    turn_then_straight: bool = False,
+) -> Tuple[np.ndarray, List[np.ndarray], int]:
     pos = np.asarray([0.0, 0.0], dtype=np.float32)
     heading = 0.0
     segments = [np.asarray([pos], dtype=np.float32)]
+    visited = 0
     for k, idx in enumerate(order):
         goal = points[idx]
         goal_h = heading
@@ -242,10 +299,20 @@ def _build_path_dubins(points: np.ndarray, order: List[int]) -> Tuple[np.ndarray
             max_turn_rate=MAX_TURN_RATE,
             dt=DT,
             turn_radius=TURN_RADIUS,
+            visit_radius=visit_radius,
+            terminate_on_visit=early_terminate_on_visit,
+            turn_then_straight=turn_then_straight,
         )
+        if visit_radius > 0.0:
+            seg, _ = _trim_path_on_visit(seg, goal, visit_radius)
+        if _segment_reaches(seg, goal, visit_radius):
+            visited += 1
+        if len(seg) >= 2:
+            heading = _heading_to(seg[-2], seg[-1])
+        if len(seg) > 0:
+            pos = seg[-1]
         segments.append(seg)
-        pos = goal
-    return stitch_paths(segments), segments
+    return stitch_paths(segments), segments, visited
 
 
 def _make_birds(rng: np.random.Generator, radius: float, n_birds: int = 6) -> Tuple[np.ndarray, np.ndarray]:
@@ -340,20 +407,51 @@ def _evaluate_bird_metrics(path: np.ndarray, birds_init: np.ndarray, birds_vel_i
     return collisions, min_d
 
 
-def _baseline1(points: np.ndarray, obstacle_map: Optional[np.ndarray], resolution_m: float) -> PlannerOutput:
+def _baseline1(
+    points: np.ndarray,
+    obstacle_map: Optional[np.ndarray],
+    resolution_m: float,
+    visit_radius: float = 0.0,
+    early_terminate_on_visit: bool = False,
+) -> PlannerOutput:
     order = nearest_neighbor_order(points)
-    path, segments = _build_path_simple(points, order)
+    path, segments, visited = _build_path_simple(
+        points,
+        order,
+        visit_radius=visit_radius,
+        early_terminate_on_visit=early_terminate_on_visit,
+    )
     infeasible = _count_infeasible_segments(segments, obstacle_map, resolution_m)
-    plan_len = _plan_length_euclidean(points, order)
-    return PlannerOutput(path=path, order=order, plan_length=plan_len, infeasible_segments=infeasible, visited_count=len(order))
+    plan_len = _plan_length_euclidean(points, order, visit_radius=visit_radius)
+    return PlannerOutput(path=path, order=order, plan_length=plan_len, infeasible_segments=infeasible, visited_count=visited)
 
 
-def _baseline2(points: np.ndarray, obstacle_map: Optional[np.ndarray], resolution_m: float) -> PlannerOutput:
+def _baseline2(
+    points: np.ndarray,
+    obstacle_map: Optional[np.ndarray],
+    resolution_m: float,
+    visit_radius: float = 0.0,
+    early_terminate_on_visit: bool = False,
+    turn_then_straight: bool = False,
+) -> PlannerOutput:
     order = nearest_neighbor_order(points)
-    path, segments = _build_path_dubins(points, order)
+    path, segments, visited = _build_path_dubins(
+        points,
+        order,
+        visit_radius=visit_radius,
+        early_terminate_on_visit=early_terminate_on_visit,
+        turn_then_straight=turn_then_straight,
+    )
     infeasible = _count_infeasible_segments(segments, obstacle_map, resolution_m)
-    plan_len = route_cost_dubins(points, order, np.asarray([0.0, 0.0], dtype=np.float32), 0.0, TURN_RADIUS)
-    return PlannerOutput(path=path, order=order, plan_length=plan_len, infeasible_segments=infeasible, visited_count=len(order))
+    plan_len = route_cost_dubins(
+        points,
+        order,
+        np.asarray([0.0, 0.0], dtype=np.float32),
+        0.0,
+        TURN_RADIUS,
+        visit_radius=visit_radius,
+    )
+    return PlannerOutput(path=path, order=order, plan_length=plan_len, infeasible_segments=infeasible, visited_count=visited)
 
 
 def _baseline3(
@@ -363,12 +461,55 @@ def _baseline3(
     radius: float,
     obstacle_map: Optional[np.ndarray] = None,
     resolution_m: float = 50.0,
+    visit_radius: float = 0.0,
+    use_visit_radius_planning: bool = False,
+    early_terminate_on_visit: bool = False,
+    two_opt_use_exec_rollout: bool = False,
+    turn_then_straight: bool = False,
 ) -> PlannerOutput:
-    order = turning_aware_order(points, np.asarray([0.0, 0.0], dtype=np.float32), 0.0, TURN_RADIUS)
-    order = two_opt_improve(order, points, np.asarray([0.0, 0.0], dtype=np.float32), 0.0, TURN_RADIUS)
-    plan_len = route_cost_dubins(points, order, np.asarray([0.0, 0.0], dtype=np.float32), 0.0, TURN_RADIUS)
+    start = np.asarray([0.0, 0.0], dtype=np.float32)
+    order = turning_aware_order(
+        points,
+        start,
+        0.0,
+        TURN_RADIUS,
+        visit_radius=visit_radius if use_visit_radius_planning else 0.0,
+    )
+    if two_opt_use_exec_rollout:
+        def _exec_cost(cand: List[int]) -> float:
+            return exec_rollout_length(
+                points,
+                cand,
+                start,
+                0.0,
+                UAV_SPEED,
+                MAX_TURN_RATE,
+                DT,
+                TURN_RADIUS,
+                visit_radius=visit_radius,
+                terminate_on_visit=early_terminate_on_visit,
+                turn_then_straight=turn_then_straight,
+            )
+        order = two_opt_improve_exec(order, _exec_cost)
+    else:
+        order = two_opt_improve(
+            order,
+            points,
+            start,
+            0.0,
+            TURN_RADIUS,
+            visit_radius=visit_radius if use_visit_radius_planning else 0.0,
+        )
+    plan_len = route_cost_dubins(
+        points,
+        order,
+        start,
+        0.0,
+        TURN_RADIUS,
+        visit_radius=visit_radius if use_visit_radius_planning else 0.0,
+    )
 
-    pos = np.asarray([0.0, 0.0], dtype=np.float32)
+    pos = start.copy()
     heading = 0.0
     segments = [np.asarray([pos], dtype=np.float32)]
     infeasible = 0
@@ -378,32 +519,61 @@ def _baseline3(
         goal_h = heading
         if k + 1 < len(order):
             goal_h = _heading_to(goal, points[order[k + 1]])
-        seg, _ = pdubins_rrt_star_connect(
+        direct, direct_heading = dubins_like_connect(
             pos,
             heading,
             goal,
             goal_h,
-            radius=radius,
-            rng=rng,
-            birds_xy=birds,
-            bird_radius=BIRD_RADIUS,
-            speed=UAV_SPEED,
-            max_turn_rate=MAX_TURN_RATE,
-            dt=DT,
+            UAV_SPEED,
+            MAX_TURN_RATE,
+            DT,
+            TURN_RADIUS,
+            visit_radius=visit_radius,
+            terminate_on_visit=early_terminate_on_visit,
+            turn_then_straight=turn_then_straight,
+        )
+        if visit_radius > 0.0:
+            direct, _ = _trim_path_on_visit(direct, goal, visit_radius)
+            if len(direct) >= 2:
+                direct_heading = _heading_to(direct[-2], direct[-1])
+        if len(direct) > 0 and path_clear(
+            direct,
+            birds,
+            BIRD_RADIUS,
             obstacle_map=obstacle_map,
             resolution_m=resolution_m,
-        )
-        if len(seg) == 0:
-            seg, heading = dubins_like_connect(pos, heading, goal, goal_h, UAV_SPEED, MAX_TURN_RATE, DT, TURN_RADIUS)
-            if _segment_has_obstacle(seg, obstacle_map, resolution_m):
-                seg = np.zeros((0, 2), dtype=np.float32)
+        ):
+            seg = direct
+            heading = direct_heading
+        else:
+            seg, _ = pdubins_rrt_star_connect(
+                pos,
+                heading,
+                goal,
+                goal_h,
+                radius=radius,
+                rng=rng,
+                birds_xy=birds,
+                bird_radius=BIRD_RADIUS,
+                speed=UAV_SPEED,
+                max_turn_rate=MAX_TURN_RATE,
+                dt=DT,
+                obstacle_map=obstacle_map,
+                resolution_m=resolution_m,
+                visit_radius=visit_radius,
+                terminate_on_visit=early_terminate_on_visit,
+                turn_then_straight=turn_then_straight,
+            )
+            if visit_radius > 0.0:
+                seg, _ = _trim_path_on_visit(seg, goal, visit_radius)
         if len(seg) == 0:
             infeasible += 1
             continue
+        if _segment_reaches(seg, goal, visit_radius):
+            visited += 1
         heading = _heading_to(seg[-2], seg[-1]) if len(seg) >= 2 else heading
         segments.append(seg)
-        pos = goal
-        visited += 1
+        pos = seg[-1]
     path = stitch_paths(segments)
     infeasible += _count_infeasible_segments(segments, obstacle_map, resolution_m)
     return PlannerOutput(path=path, order=order, plan_length=plan_len, infeasible_segments=infeasible, visited_count=visited)
@@ -428,6 +598,8 @@ def _run_method(
     total_t = exec_len / UAV_SPEED if UAV_SPEED > 1e-6 else float('nan')
     collisions, min_d = _evaluate_bird_metrics(path, birds, birds_vel, birds_mode, radius)
     obstacle_hits = _count_obstacle_hits(path, obstacle_map, resolution_m)
+    total_points = len(points)
+    coverage_rate = float(plan.visited_count) / float(total_points) if total_points > 0 else 0.0
     return EvalResult(
         name,
         path,
@@ -440,7 +612,8 @@ def _run_method(
         obstacle_hits,
         plan.infeasible_segments,
         plan.visited_count,
-        len(points),
+        total_points,
+        coverage_rate,
     )
 
 
@@ -469,7 +642,7 @@ def _plot_results(
             f"{res.method}\n"
             f"L_exec={res.exec_length:.1f}m  T={res.total_time:.1f}s  Plan={res.planning_time:.3f}s\n"
             f"Coll={res.collisions}  Infeas={res.infeasible_segments}  MinD={res.min_distance:.1f}m\n"
-            f"Visited={res.visited_count}/{res.total_points}  ObsHits={res.obstacle_hits}"
+            f"Visited={res.visited_count}/{res.total_points} ({res.coverage_rate*100:.1f}%)  ObsHits={res.obstacle_hits}"
         )
         ax.grid(True, alpha=0.25)
     axes[0].legend(loc='upper right', fontsize=8)
@@ -521,7 +694,16 @@ def main() -> None:
     parser.add_argument('--elev_threshold', type=float, default=2000.0)
     parser.add_argument('--resolution_m', type=float, default=50.0)
     parser.add_argument('--allow_sample', action='store_true', help='Allow fallback to synthetic/sample data.')
+    parser.add_argument('--use_visit_radius_planning', type=int, default=1, help='Enable visit-radius TSPN costs (0/1).')
+    parser.add_argument('--early_terminate_on_visit', type=int, default=1, help='Terminate segments once inside visit radius (0/1).')
+    parser.add_argument('--two_opt_use_exec_rollout', type=int, default=1, help='Use L_exec rollout for 2-opt (0/1).')
     args = parser.parse_args()
+
+    use_visit_radius_planning = bool(args.use_visit_radius_planning)
+    early_terminate_on_visit = bool(args.early_terminate_on_visit)
+    two_opt_use_exec_rollout = bool(args.two_opt_use_exec_rollout)
+    visit_radius = VISIT_RADIUS if (use_visit_radius_planning or early_terminate_on_visit) else 0.0
+    turn_then_straight = True
 
     rng = np.random.default_rng(args.seed)
     lat_c, lon_c, radius, fire_points, meta, used_sample = _load_circle_dataset(
@@ -573,6 +755,8 @@ def main() -> None:
                     f'obstacle_map={obstacle_map.shape}  resolution={resolution_m:.1f}m  '
                     f'obstacle_pixels={n_obs} ({n_obs/obstacle_map.size*100:.2f}%)'
                 )
+                if n_obs == 0:
+                    print('[WARNING] obstacle_map has 0 obstacle pixels; check threshold/CRS or DEM coverage.')
             except Exception as e:
                 print(f'[WARNING] Could not load elevation map: {e}')
         else:
@@ -595,11 +779,24 @@ def main() -> None:
     methods = [
         (
             'Baseline1: Euclidean-order + simple turning',
-            lambda pts: _baseline1(pts, obstacle_map=obstacle_map, resolution_m=resolution_m),
+            lambda pts: _baseline1(
+                pts,
+                obstacle_map=obstacle_map,
+                resolution_m=resolution_m,
+                visit_radius=visit_radius,
+                early_terminate_on_visit=early_terminate_on_visit,
+            ),
         ),
         (
             'Baseline2: Euclidean-order + Dubins',
-            lambda pts: _baseline2(pts, obstacle_map=obstacle_map, resolution_m=resolution_m),
+            lambda pts: _baseline2(
+                pts,
+                obstacle_map=obstacle_map,
+                resolution_m=resolution_m,
+                visit_radius=visit_radius,
+                early_terminate_on_visit=early_terminate_on_visit,
+                turn_then_straight=turn_then_straight,
+            ),
         ),
         (
             'Baseline3: 2-opt turn-cost + P-Dubins-RRT*',
@@ -610,6 +807,11 @@ def main() -> None:
                 radius=radius,
                 obstacle_map=obstacle_map,
                 resolution_m=resolution_m,
+                visit_radius=visit_radius,
+                use_visit_radius_planning=use_visit_radius_planning,
+                early_terminate_on_visit=early_terminate_on_visit,
+                two_opt_use_exec_rollout=two_opt_use_exec_rollout,
+                turn_then_straight=turn_then_straight,
             ),
         ),
     ]
@@ -633,7 +835,7 @@ def main() -> None:
             f'time={res.total_time:.2f}s planning={res.planning_time:.3f}s '
             f'collisions={res.collisions} infeasible={res.infeasible_segments} '
             f'min_distance={res.min_distance:.2f}m obstacle_hits={res.obstacle_hits} '
-            f'visited={res.visited_count}/{res.total_points}'
+            f'visited={res.visited_count}/{res.total_points} coverage={res.coverage_rate*100:.1f}%'
         )
 
     context_path = args.context_path
