@@ -487,7 +487,7 @@ def _baseline3(
                 DT,
                 TURN_RADIUS,
                 visit_radius=visit_radius,
-                terminate_on_visit=early_terminate_on_visit,
+                terminate_on_visit=early_terminate_on_visit or use_visit_radius_planning,
                 turn_then_straight=turn_then_straight,
             )
         order = two_opt_improve_exec(order, _exec_cost)
