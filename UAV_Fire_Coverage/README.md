@@ -221,6 +221,40 @@ python UAV_Fire_Coverage/evaluate_planners.py --task circle8 --seed 0 --birds_mo
 python UAV_Fire_Coverage/evaluate_planners.py --task circle1 --cluster_id 1 --seed 0 --birds_mode frozen --save_path out_circle1.png
 ```
 
+### New evaluator options (offline planners)
+
+Key arguments added for goal-region coverage and fixed-time comparisons:
+
+- `--visit_radius` (default: 120) — radius (m) to count a fire point as visited.
+- `--early_terminate_on_visit` (default: 1) — stop a segment once it enters the visit radius.
+- `--entry_point_opt` (`none|sample_circle`) and `--entry_point_K` (default: 16) — sample K points on the visit circle to pick a shorter entry point.
+- `--connector` (`straight|dubins_like|rrtstar|dubins_rrtstar|pdubins_rrtstar|goal_region_pdubins_rrtstar`) — connector used in Baseline3.
+- `--time_budget` (default: 0.2) — per-connector planning time budget (seconds) for RRT* variants.
+- `--local_pairs` (default: 0) and `--local_save_path` — optional local pair evaluation.
+
+**Global evaluation (Circle8) example**
+
+```bash
+python UAV_Fire_Coverage/evaluate_planners.py \
+  --task circle8 --seed 0 --birds_mode frozen \
+  --visit_radius 120 --early_terminate_on_visit 1 \
+  --entry_point_opt sample_circle --entry_point_K 16 \
+  --connector goal_region_pdubins_rrtstar --time_budget 0.2 \
+  --save_path out_circle8.png
+```
+
+**Local pair evaluation (adjacent points) example**
+
+```bash
+python UAV_Fire_Coverage/evaluate_planners.py \
+  --task circle8 --seed 0 --birds_mode frozen \
+  --visit_radius 120 --early_terminate_on_visit 1 \
+  --entry_point_opt sample_circle --entry_point_K 16 \
+  --connector pdubins_rrtstar --time_budget 0.2 \
+  --local_pairs 3 --local_save_path out_local_pairs.png \
+  --save_path out_circle8.png
+```
+
 The plot contains all three methods, birds (red triangles), and per-method
 metrics (path length/time, planning time, collisions, minimum bird distance).
 

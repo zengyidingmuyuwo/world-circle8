@@ -70,8 +70,10 @@ def route_cost_dubins(
     start_heading: float,
     turn_radius: float,
     visit_radius: float = 0.0,
+    entry_points: np.ndarray = None,
 ) -> float:
     pts = np.asarray(points_xy, dtype=np.float32)
+    targets = pts if entry_points is None else np.asarray(entry_points, dtype=np.float32)
     if len(order) == 0:
         return 0.0
     cur = np.asarray(start_xy, dtype=np.float32)
@@ -79,9 +81,9 @@ def route_cost_dubins(
     heading = float(start_heading)
     total = 0.0
     for k, idx in enumerate(order):
-        goal = pts[idx]
+        goal = targets[idx]
         if k + 1 < len(order):
-            nvec = pts[order[k + 1]] - goal
+            nvec = targets[order[k + 1]] - goal
             goal_h = math.atan2(float(nvec[1]), float(nvec[0]))
         else:
             end_vec = goal - cur
@@ -111,18 +113,20 @@ def exec_rollout_length(
     visit_radius: float = 0.0,
     terminate_on_visit: bool = False,
     turn_then_straight: bool = False,
+    entry_points: np.ndarray = None,
 ) -> float:
     pts = np.asarray(points_xy, dtype=np.float32)
+    targets = pts if entry_points is None else np.asarray(entry_points, dtype=np.float32)
     if len(order) == 0:
         return 0.0
     cur = np.asarray(start_xy, dtype=np.float32)
     heading = float(start_heading)
     total = 0.0
     for k, idx in enumerate(order):
-        goal = pts[idx]
+        goal = targets[idx]
         goal_h = heading
         if k + 1 < len(order):
-            nvec = pts[order[k + 1]] - goal
+            nvec = targets[order[k + 1]] - goal
             goal_h = math.atan2(float(nvec[1]), float(nvec[0]))
         seg, heading = dubins_like_connect(
             cur,

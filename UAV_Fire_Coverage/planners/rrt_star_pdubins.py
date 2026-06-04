@@ -1,4 +1,5 @@
 import math
+import time
 from dataclasses import dataclass
 from typing import Iterable, List, Optional, Sequence, Tuple
 
@@ -47,6 +48,25 @@ def _segment_hits_obstacle(a: np.ndarray, b: np.ndarray, obstacle_map: np.ndarra
         if cell is not None and obstacle_map[cell]:
             return True
     return False
+
+
+def _goal_region_distance(pos: np.ndarray, goal: np.ndarray, radius: float) -> float:
+    dist = float(np.linalg.norm(pos - goal))
+    if radius <= 0.0:
+        return dist
+    return max(0.0, dist - radius)
+
+
+def _project_to_circle(goal: np.ndarray, from_xy: np.ndarray, radius: float) -> np.ndarray:
+    if radius <= 0.0:
+        return goal
+    vec = np.asarray(from_xy, dtype=np.float32) - np.asarray(goal, dtype=np.float32)
+    dist = float(np.linalg.norm(vec))
+    if dist <= radius:
+        return np.asarray(from_xy, dtype=np.float32)
+    if dist < 1e-6:
+        return goal + np.asarray([radius, 0.0], dtype=np.float32)
+    return goal + vec / dist * float(radius)
 
 
 def _segment_clear(
@@ -136,17 +156,23 @@ def pdubins_rrt_star_connect(
     visit_radius: float = 0.0,
     terminate_on_visit: bool = False,
     turn_then_straight: bool = False,
+    time_budget: Optional[float] = None,
+    goal_region: bool = False,
 ) -> Tuple[np.ndarray, float]:
     """P-Dubins-RRT*: XY sampling, strict collision-free connect/rewire."""
     start = np.asarray(start_xy, dtype=np.float32)
     goal = np.asarray(goal_xy, dtype=np.float32)
     turn_radius = max(speed / max(max_turn_rate, 1e-6), 1.0)
+    goal_radius = float(visit_radius) if goal_region and visit_radius > 0.0 else 0.0
+    if goal_radius > 0.0 and float(np.linalg.norm(start - goal)) <= goal_radius:
+        return np.asarray([start.copy()], dtype=np.float32), 0.0
     if terminate_on_visit and visit_radius > 0.0:
         connect_threshold = max(connect_threshold, float(visit_radius))
+    direct_goal = _project_to_circle(goal, start, goal_radius) if goal_radius > 0.0 else goal
     direct, _ = dubins_like_connect(
         start,
         start_heading,
-        goal,
+        direct_goal,
         goal_heading,
         speed=speed,
         max_turn_rate=max_turn_rate,
@@ -163,6 +189,7 @@ def pdubins_rrt_star_connect(
     nodes: List[_Node] = [_Node(pos=start.copy(), heading=float(start_heading), parent=-1, cost=0.0)]
     best_goal_idx = -1
     best_goal_cost = float('inf')
+    t0 = time.perf_counter()
 
     def nearest_index(sample_xy: np.ndarray) -> int:
         d = [float(np.linalg.norm(n.pos - sample_xy)) for n in nodes]
@@ -176,8 +203,15 @@ def pdubins_rrt_star_connect(
         return out
 
     for _ in range(int(max_iters)):
+        if time_budget is not None and (time.perf_counter() - t0) >= time_budget:
+            break
         if rng.random() < GOAL_BIAS_PROB:
-            sample = goal
+            if goal_radius > 0.0:
+                ang = rng.uniform(-math.pi, math.pi)
+                rr = goal_radius * math.sqrt(rng.random())
+                sample = goal + np.asarray([rr * math.cos(ang), rr * math.sin(ang)], dtype=np.float32)
+            else:
+                sample = goal
         else:
             ang = rng.uniform(-math.pi, math.pi)
             # In polar sampling, sqrt(random) gives uniform area coverage in a disk.
@@ -234,18 +268,20 @@ def pdubins_rrt_star_connect(
             ):
                 nodes[i] = _Node(pos=cand.pos, heading=cand.heading, parent=i_new, cost=c_new)
 
-        dist_goal = float(np.linalg.norm(new_xy - goal))
-        if terminate_on_visit and visit_radius > 0.0 and dist_goal <= visit_radius:
+        dist_center = float(np.linalg.norm(new_xy - goal))
+        dist_goal = _goal_region_distance(new_xy, goal, goal_radius)
+        if terminate_on_visit and visit_radius > 0.0 and dist_center <= visit_radius:
             if nodes[i_new].cost < best_goal_cost:
                 best_goal_cost = nodes[i_new].cost
                 best_goal_idx = i_new
             continue
         # strict connection to goal via full Dubins-like path
         if dist_goal <= connect_threshold:
+            goal_target = _project_to_circle(goal, new_xy, goal_radius) if goal_radius > 0.0 else goal
             path_to_goal, _ = dubins_like_connect(
                 new_xy,
                 nodes[i_new].heading,
-                goal,
+                goal_target,
                 goal_heading,
                 speed=speed,
                 max_turn_rate=max_turn_rate,
@@ -263,7 +299,7 @@ def pdubins_rrt_star_connect(
 
     if best_goal_idx == -1:
         # fallback: use nearest-to-goal node then Dubins-like connect
-        d = [float(np.linalg.norm(n.pos - goal)) for n in nodes]
+        d = [_goal_region_distance(n.pos, goal, goal_radius) for n in nodes]
         best_goal_idx = int(np.argmin(d))
 
     chain = []
@@ -274,8 +310,9 @@ def pdubins_rrt_star_connect(
     chain.reverse()
 
     if not (terminate_on_visit and visit_radius > 0.0 and float(np.linalg.norm(chain[-1] - goal)) <= visit_radius):
+        goal_target = _project_to_circle(goal, chain[-1], goal_radius) if goal_radius > 0.0 else goal
         tail, _ = dubins_like_connect(
-            chain[-1], nodes[best_goal_idx].heading, goal, goal_heading,
+            chain[-1], nodes[best_goal_idx].heading, goal_target, goal_heading,
             speed=speed, max_turn_rate=max_turn_rate, dt=dt,
             turn_radius=turn_radius,
             visit_radius=visit_radius,
