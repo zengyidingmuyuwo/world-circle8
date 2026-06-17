@@ -185,7 +185,7 @@ def load_circle_center_csv(filepath, circle_id=None):
     return lat, lon, radius
 
 
-def load_fire_points_csv(filepath, lat_center, lon_center):
+def load_fire_points_csv(filepath, lat_center, lon_center, return_meta=False):
     """Load fire points from a CSV file and return local-metric coordinates.
 
     The CSV must contain columns ``latitude`` and ``longitude``
@@ -195,6 +195,8 @@ def load_fire_points_csv(filepath, lat_center, lon_center):
     -------
     points : np.ndarray, shape (N, 2), dtype float32
         Each row is (east_m, north_m) relative to (lat_center, lon_center).
+    meta : dict (optional)
+        Returned when ``return_meta=True``.
     """
     points = []
     with open(filepath, newline='', encoding='utf-8-sig') as f:
@@ -205,14 +207,27 @@ def load_fire_points_csv(filepath, lat_center, lon_center):
             lon = float(row_n['longitude'])
             e, n = latlon_to_local(lat, lon, lat_center, lon_center)
             points.append([e, n])
-    return np.array(points, dtype=np.float32)
+    points_arr = np.array(points, dtype=np.float32)
+    if not return_meta:
+        return points_arr
+    scale_lat = 111_000.0
+    scale_lon = 111_000.0 * math.cos(math.radians(float(lat_center)))
+    return points_arr, {
+        'source': os.path.abspath(filepath),
+        'input_type': 'csv',
+        'coord_mode': 'geographic',
+        'lat_center': float(lat_center),
+        'lon_center': float(lon_center),
+        'scale_m_per_deg_lat': float(scale_lat),
+        'scale_m_per_deg_lon': float(scale_lon),
+    }
 
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Shapefile loader (optional — requires pyshp / shapefile)
 # ──────────────────────────────────────────────────────────────────────────────
 
-def load_fire_points_shp(filepath, lat_center, lon_center):
+def load_fire_points_shp(filepath, lat_center, lon_center, return_meta=False):
     """Load fire points from an ESRI Shapefile.
 
     Requires the ``shapefile`` package (``pip install pyshp``).
@@ -221,17 +236,35 @@ def load_fire_points_shp(filepath, lat_center, lon_center):
     Returns
     -------
     points : np.ndarray, shape (N, 2), dtype float32
+    meta : dict (optional)
+        Returned when ``return_meta=True``.
     """
+    meta_base = {
+        'source': os.path.abspath(filepath),
+        'input_type': 'shp',
+        'lat_center': float(lat_center),
+        'lon_center': float(lon_center),
+    }
+
+    def _final(points, extra=None):
+        pts = np.asarray(points, dtype=np.float32)
+        if not return_meta:
+            return pts
+        meta = dict(meta_base)
+        if extra:
+            meta.update(extra)
+        return pts, meta
+
     # Preferred path: geopandas can read CRS and safely transform to WGS84.
     try:
         import geopandas as gpd
         from pyproj import Transformer
         gdf = gpd.read_file(filepath)
         if gdf.empty:
-            return np.zeros((0, 2), dtype=np.float32)
+            return _final(np.zeros((0, 2), dtype=np.float32), {'coord_mode': 'empty'})
         gdf = gdf[gdf.geometry.notnull()].copy()
         if gdf.empty:
-            return np.zeros((0, 2), dtype=np.float32)
+            return _final(np.zeros((0, 2), dtype=np.float32), {'coord_mode': 'empty'})
         if gdf.crs is None:
             # If values look projected (meters), convert center into inferred UTM
             # and subtract center to build local coordinates.
@@ -239,24 +272,47 @@ def load_fire_points_shp(filepath, lat_center, lon_center):
             x_abs = np.nanmedian(np.abs(xy[:, 0]))
             y_abs = np.nanmedian(np.abs(xy[:, 1]))
             if x_abs > 1e4 or y_abs > 1e4:
-                return local_offsets_from_projected_xy(xy, lat_center, lon_center)
+                utm_epsg = infer_utm_epsg(lon_center, lat_center)
+                return _final(
+                    local_offsets_from_projected_xy(xy, lat_center, lon_center),
+                    {'coord_mode': 'projected_no_crs', 'utm_epsg': int(utm_epsg)},
+                )
             # Otherwise assume lon/lat
             lon = xy[:, 0]
             lat = xy[:, 1]
             out = [latlon_to_local(la, lo, lat_center, lon_center) for la, lo in zip(lat, lon)]
-            return np.asarray(out, dtype=np.float32)
+            scale_lat = 111_000.0
+            scale_lon = 111_000.0 * math.cos(math.radians(float(lat_center)))
+            return _final(
+                out,
+                {
+                    'coord_mode': 'geographic_no_crs',
+                    'scale_m_per_deg_lat': float(scale_lat),
+                    'scale_m_per_deg_lon': float(scale_lon),
+                },
+            )
         if gdf.crs.is_geographic:
             lon = gdf.geometry.x.to_numpy(dtype=np.float64)
             lat = gdf.geometry.y.to_numpy(dtype=np.float64)
             out = [latlon_to_local(la, lo, lat_center, lon_center) for la, lo in zip(lat, lon)]
-            return np.asarray(out, dtype=np.float32)
+            scale_lat = 111_000.0
+            scale_lon = 111_000.0 * math.cos(math.radians(float(lat_center)))
+            return _final(
+                out,
+                {
+                    'coord_mode': 'geographic',
+                    'crs': str(gdf.crs),
+                    'scale_m_per_deg_lat': float(scale_lat),
+                    'scale_m_per_deg_lon': float(scale_lon),
+                },
+            )
         # Projected CRS (meter): transform center lon/lat into this CRS and compute local meter offsets.
         to_proj = Transformer.from_crs("EPSG:4326", gdf.crs, always_xy=True)
         cx, cy = to_proj.transform(float(lon_center), float(lat_center))
         x = gdf.geometry.x.to_numpy(dtype=np.float64)
         y = gdf.geometry.y.to_numpy(dtype=np.float64)
         pts = np.column_stack([x - cx, y - cy]).astype(np.float32)
-        return pts
+        return _final(pts, {'coord_mode': 'projected', 'crs': str(gdf.crs)})
     except Exception:
         pass
 
@@ -267,7 +323,12 @@ def load_fire_points_shp(filepath, lat_center, lon_center):
         csv_path = os.path.splitext(filepath)[0] + '.csv'
         if os.path.exists(csv_path):
             print(f"[data_utils] pyshp not available; loading {csv_path} instead.")
-            return load_fire_points_csv(csv_path, lat_center, lon_center)
+            result = load_fire_points_csv(csv_path, lat_center, lon_center, return_meta=return_meta)
+            if not return_meta:
+                return result
+            points, meta = result
+            meta['fallback_from_shp'] = True
+            return points, meta
         raise ImportError(
             "geopandas/pyproj or pyshp is required to read .shp files. "
             "Install one of:\n"
@@ -282,16 +343,30 @@ def load_fire_points_shp(filepath, lat_center, lon_center):
             x, y = shape.points[0]
             xy.append([x, y])
     if not xy:
-        return np.zeros((0, 2), dtype=np.float32)
+        return _final(np.zeros((0, 2), dtype=np.float32), {'coord_mode': 'empty'})
     xy = np.asarray(xy, dtype=np.float64)
     x_abs = np.nanmedian(np.abs(xy[:, 0]))
     y_abs = np.nanmedian(np.abs(xy[:, 1]))
     if x_abs > 1e4 or y_abs > 1e4:
         # Projected-meter legacy SHP without CRS metadata.
-        return local_offsets_from_projected_xy(xy, lat_center, lon_center)
+        utm_epsg = infer_utm_epsg(lon_center, lat_center)
+        return _final(
+            local_offsets_from_projected_xy(xy, lat_center, lon_center),
+            {'coord_mode': 'projected_no_crs', 'utm_epsg': int(utm_epsg), 'backend': 'pyshp'},
+        )
     # Assume lon/lat legacy input.
     out = [latlon_to_local(y, x, lat_center, lon_center) for x, y in xy]
-    return np.asarray(out, dtype=np.float32)
+    scale_lat = 111_000.0
+    scale_lon = 111_000.0 * math.cos(math.radians(float(lat_center)))
+    return _final(
+        out,
+        {
+            'coord_mode': 'geographic_no_crs',
+            'backend': 'pyshp',
+            'scale_m_per_deg_lat': float(scale_lat),
+            'scale_m_per_deg_lon': float(scale_lon),
+        },
+    )
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -429,7 +504,7 @@ def load_elevation_obstacle_map(tif_filepath, lat_center, lon_center,
 # High-level loader — auto-detects file type
 # ──────────────────────────────────────────────────────────────────────────────
 
-def load_circle_data(center_csv, points_file, circle_id=None):
+def load_circle_data(center_csv, points_file, circle_id=None, return_meta=False):
     """Convenience wrapper that loads centre + fire points for one circle.
 
     *center_csv* — path to the circle-centre CSV file.
@@ -441,18 +516,29 @@ def load_circle_data(center_csv, points_file, circle_id=None):
     lat_c, lon_c : float   — circle centre in WGS-84
     radius_m : float        — circle radius (metres)
     points : np.ndarray, shape (N, 2)  — fire points in local metric coords
+    meta : dict (optional)
+        Returned when ``return_meta=True``.
     """
     lat_c, lon_c, radius_m = load_circle_center_csv(center_csv, circle_id=circle_id)
 
     ext = os.path.splitext(points_file)[1].lower()
     if ext == '.shp':
-        points = load_fire_points_shp(points_file, lat_c, lon_c)
+        points = load_fire_points_shp(points_file, lat_c, lon_c, return_meta=return_meta)
     elif ext == '.csv':
-        points = load_fire_points_csv(points_file, lat_c, lon_c)
+        points = load_fire_points_csv(points_file, lat_c, lon_c, return_meta=return_meta)
     else:
         raise ValueError(f"Unsupported fire-points file type: {ext}  (use .shp or .csv)")
 
-    return lat_c, lon_c, radius_m, points
+    if not return_meta:
+        return lat_c, lon_c, radius_m, points
+    points_arr, meta = points
+    meta = dict(meta)
+    meta.update({
+        'center_csv': os.path.abspath(center_csv),
+        'points_file': os.path.abspath(points_file),
+        'circle_id': None if circle_id is None else int(circle_id),
+    })
+    return lat_c, lon_c, radius_m, points_arr, meta
 
 
 # ──────────────────────────────────────────────────────────────────────────────

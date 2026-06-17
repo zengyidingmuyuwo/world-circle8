@@ -41,14 +41,51 @@ def main():
     parser.add_argument('--save_path', type=str, default='trajectory_plot.png')
     args = parser.parse_args()
 
-    if args.center_csv and args.points_file and os.path.exists(args.center_csv) and os.path.exists(args.points_file):
-        lat_c, lon_c, radius, fire_points = load_circle_data(args.center_csv, args.points_file, circle_id=args.circle_id)
-        if args.elevation_tif and os.path.exists(args.elevation_tif):
-            obstacle_map, resolution_m = load_elevation_obstacle_map(
-                args.elevation_tif, lat_c, lon_c, region_radius_m=radius,
-                elevation_threshold=args.elev_threshold)
+    root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+    prepare = os.path.join(root, 'prepare')
+    center_csv = args.center_csv
+    points_file = args.points_file
+    if not (center_csv and points_file and os.path.exists(center_csv) and os.path.exists(points_file)):
+        center_csv = os.path.join(prepare, 'circle_8_center.csv')
+        shp = os.path.join(prepare, 'circle_8_points.shp')
+        csv = os.path.join(prepare, 'circle_8_points.csv')
+        points_file = csv if os.path.exists(csv) else shp
+
+    elevation_tif = args.elevation_tif
+    if not elevation_tif:
+        direct_zip = os.path.join(prepare, 'elevation.zip')
+        if os.path.exists(direct_zip):
+            elevation_tif = direct_zip
         else:
-            (_, _, radius), fire_points, obstacle_map, resolution_m = generate_sample_circle8_data()
+            elev_dir = os.path.join(prepare, 'elevation')
+            if os.path.isdir(elev_dir):
+                tif_candidates = sorted(
+                    f for f in os.listdir(elev_dir) if f.lower().endswith(('.tif', '.tiff', '.zip'))
+                )
+                if tif_candidates:
+                    elevation_tif = os.path.join(elev_dir, tif_candidates[0])
+
+    if center_csv and points_file and os.path.exists(center_csv) and os.path.exists(points_file):
+        lat_c, lon_c, radius, fire_points = load_circle_data(center_csv, points_file, circle_id=args.circle_id)
+        obstacle_map = None
+        resolution_m = 50.0
+        if elevation_tif and os.path.exists(elevation_tif):
+            try:
+                obstacle_map, resolution_m = load_elevation_obstacle_map(
+                    elevation_tif, lat_c, lon_c, region_radius_m=radius,
+                    elevation_threshold=args.elev_threshold)
+                n_obs = int(np.sum(obstacle_map))
+                print(
+                    f'[Data] elevation_tif={os.path.abspath(elevation_tif)}  '
+                    f'obstacle_map={obstacle_map.shape}  resolution={resolution_m:.1f}m  '
+                    f'obstacle_pixels={n_obs} ({n_obs/obstacle_map.size*100:.2f}%)'
+                )
+                if n_obs == 0:
+                    print('[WARNING] obstacle_map has 0 obstacle pixels; check threshold/CRS or DEM coverage.')
+            except Exception as e:
+                print(f'[WARNING] Could not load elevation map: {e}')
+        else:
+            print('[WARNING] No elevation_tif found; obstacle map disabled.')
     else:
         (_, _, radius), fire_points, obstacle_map, resolution_m = generate_sample_circle8_data()
 

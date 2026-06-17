@@ -211,6 +211,70 @@ The output image includes:
 - executed local trajectory (solid),
 - fire points (star markers).
 
+### Offline planner baselines (no RL training)
+
+Use the offline evaluator to compare three planning baselines on Circle8 or
+Circle1 cluster subsets:
+
+```bash
+python UAV_Fire_Coverage/evaluate_planners.py --task circle8 --seed 0 --birds_mode frozen --save_path out_circle8.png
+python UAV_Fire_Coverage/evaluate_planners.py --task circle1 --cluster_id 1 --seed 0 --birds_mode frozen --save_path out_circle1.png
+```
+
+### New evaluator options (offline planners)
+
+Key arguments added for goal-region coverage and fixed-time comparisons:
+
+- `--visit_radius` (default: 120) — radius (m) to count a fire point as visited.
+- `--early_terminate_on_visit` (default: 1) — stop a segment once it enters the visit radius.
+- `--entry_point_opt` (`none|sample_circle`) and `--entry_point_K` (default: 16) — sample K points on the visit circle to pick a shorter entry point.
+- `--connector` (`straight|dubins_like|rrtstar|dubins_rrtstar|pdubins_rrtstar|goal_region_pdubins_rrtstar`) — connector used in Baseline3.
+- `--time_budget` (default: 0.2) — per-connector planning time budget (seconds) for RRT* variants.
+- `--local_pairs` (default: 0) and `--local_save_path` — optional local pair evaluation.
+
+**Global evaluation (Circle8) example**
+
+```bash
+python UAV_Fire_Coverage/evaluate_planners.py \
+  --task circle8 --seed 0 --birds_mode frozen \
+  --visit_radius 120 --early_terminate_on_visit 1 \
+  --entry_point_opt sample_circle --entry_point_K 16 \
+  --connector goal_region_pdubins_rrtstar --time_budget 0.2 \
+  --save_path out_circle8.png
+```
+
+**Local pair evaluation (adjacent points) example**
+
+```bash
+python UAV_Fire_Coverage/evaluate_planners.py \
+  --task circle8 --seed 0 --birds_mode frozen \
+  --visit_radius 120 --early_terminate_on_visit 1 \
+  --entry_point_opt sample_circle --entry_point_K 16 \
+  --connector pdubins_rrtstar --time_budget 0.2 \
+  --local_pairs 3 --local_save_path out_local_pairs.png \
+  --save_path out_circle8.png
+```
+
+The plot contains all three methods, birds (red triangles), and per-method
+metrics (path length/time, planning time, collisions, minimum bird distance).
+
+**Baseline provenance & metric notes**
+
+- Baseline2 (Dubins) and Baseline3 (P-Dubins-RRT* + 2-opt) are **in-repo simplified implementations**,
+  not direct copies of official/public code from the original papers.
+- Key differences vs. the P-Dubins-RRT* paper implementation include:
+  - relaxed Dubins-like connector (discrete step simulation) rather than exact Dubins solutions;
+  - RRT* samples XY only with fixed step size and a simple goal bias, without the full cost heuristics;
+  - rewiring and collision checks use coarse sampling against circular birds + elevation grid;
+  - 2-opt uses a Dubins-approx length heuristic instead of the paper’s exact cost model.
+- The evaluator reports **L_exec** (executed/simulated path length) and **L_plan** (waypoint/Dubins
+  heuristic length) in the terminal; plot titles use **L_exec** for consistent comparison.
+
+**Recommendation**: For small-paper comparisons, the current baselines capture the core ideas
+(turning constraints, heuristic ordering, and obstacle-aware RRT*). If you need a strict
+reproduction of the paper’s quantitative results, consider re-implementing directly from the
+official code (if available) or following the paper’s exact cost/rewire and sampling details.
+
 ---
 
 ## 新手操作步骤（通俗版）
